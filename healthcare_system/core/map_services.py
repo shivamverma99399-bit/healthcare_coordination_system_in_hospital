@@ -1,3 +1,4 @@
+from .models import Hospital
 import requests
 
 CLIENT_ID = "96dHZVzsAutg91LSAxiELfFj1TGwLr9xz2MtKtqeOdpVjBvq8UebxtC8uk9g56-Mz5-EfElw_XeDE6eRU5m1X57ZsIoaUJYs"
@@ -67,16 +68,35 @@ def get_nearby_hospitals(lat, lng):
 
     res = requests.get(url, headers=headers, params=params).json()
 
+    from .models import Hospital
+
     hospitals = []
 
     for place in res.get("suggestedLocations", []):
-        hospitals.append({
-            "place_id": place.get("eLoc"),
-            "name": place.get("placeName"),
-            "lat": place.get("latitude"),
-            "lng": place.get("longitude"),
-            "address": place.get("placeAddress"),
-            "distance": place.get("distance", 0)
-        })
+        place_id = place.get("eLoc")
+        name = place.get("placeName")
+        lat = place.get("latitude")
+        lng = place.get("longitude")
+        address = place.get("placeAddress")
 
+        hospital_obj, created = Hospital.objects.get_or_create(
+            place_id=place_id,
+            defaults={
+                "name": name,
+                "latitude": lat,
+                "longitude": lng,
+                "address": address,
+                "beds_available": 10,
+                "icu_available": False,
+                "wait_time": 15
+            }
+        )
+
+        hospitals.append({
+            "id": hospital_obj.id,
+            "name": hospital_obj.name,
+            "lat": hospital_obj.latitude,
+            "lng": hospital_obj.longitude,
+            "address": hospital_obj.address,
+        })
     return hospitals

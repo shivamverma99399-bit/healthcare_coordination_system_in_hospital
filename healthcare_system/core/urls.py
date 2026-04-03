@@ -1,6 +1,50 @@
 from django.urls import path
-from .views import recommend
+from .views import (
+    AdminHospitalUpdateView,
+    AdminOverviewView,
+    AdminPatientRecordUpdateView,
+    AdminTransferView,
+    AnalyzeSymptomsView,
+    BookAppointmentView,
+    DemoAccountsView,
+    DoctorsByHospitalView,
+    HospitalRecommendationsView,
+    LoginView,
+    LogoutView,
+    PatientDashboardView,
+    PatientSosAlertView,
+    SessionView,
+)
 
 urlpatterns = [
-    path('recommend/', recommend),
+    path("auth/demo-accounts", DemoAccountsView.as_view(), name="demo-accounts"),
+    path("auth/login", LoginView.as_view(), name="auth-login"),
+    path("auth/session", SessionView.as_view(), name="auth-session"),
+    path("auth/logout", LogoutView.as_view(), name="auth-logout"),
+    path("analyze-symptoms", AnalyzeSymptomsView.as_view(), name="analyze-symptoms"),
+    path(
+        "hospitals/recommendations",
+        HospitalRecommendationsView.as_view(),
+        name="hospital-recommendations",
+    ),
+    path(
+        "doctors/by-hospital",
+        DoctorsByHospitalView.as_view(),
+        name="doctors-by-hospital",
+    ),
+    path("book-appointment", BookAppointmentView.as_view(), name="book-appointment"),
+    path("patient/dashboard", PatientDashboardView.as_view(), name="patient-dashboard"),
+    path("patient/sos-alerts", PatientSosAlertView.as_view(), name="patient-sos-alerts"),
+    path("admin/overview", AdminOverviewView.as_view(), name="admin-overview"),
+    path(
+        "admin/hospitals/<int:hospital_id>",
+        AdminHospitalUpdateView.as_view(),
+        name="admin-hospital-update",
+    ),
+    path(
+        "admin/patient-records/<int:booking_id>",
+        AdminPatientRecordUpdateView.as_view(),
+        name="admin-patient-record-update",
+    ),
+    path("admin/transfers", AdminTransferView.as_view(), name="admin-transfers"),
 ]

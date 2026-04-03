@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: medpulse-backend
+    runtime: python
+    rootDir: healthcare_system
+    buildCommand: bash build.sh
+    startCommand: gunicorn healthcare_system.wsgi:application
+    healthCheckPath: /api/auth/demo-accounts
+    envVars:
+      - key: DJANGO_SECRET_KEY
+        sync: false
+      - key: DJANGO_DEBUG
+        value: "0"
+      - key: DJANGO_ALLOWED_HOSTS
+        value: localhost,127.0.0.1
+      - key: DJANGO_CSRF_TRUSTED_ORIGINS
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-1.5-flash
+      - key: RUN_SEED_DATA
+        value: "1"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: medpulse-db
+          property: connectionString
+
+databases:
+  - name: medpulse-db
