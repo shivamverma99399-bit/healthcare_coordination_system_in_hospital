@@ -1,102 +1,116 @@
-from .models import Hospital
-import requests
+import logging
 
-CLIENT_ID = "96dHZVzsAutg91LSAxiELfFj1TGwLr9xz2MtKtqeOdpVjBvq8UebxtC8uk9g56-Mz5-EfElw_XeDE6eRU5m1X57ZsIoaUJYs"
-CLIENT_SECRET = "lrFxI-iSEg9Xm6x31j2k2DYF7nOjmh0rlOg8twlcolvuAL1NyA28pGC2-KdhGY22_39fAG5W2ba9DyFRk3y6AsyvqyS2ndhoqUAla7QYPeg="
+import requests
+from django.conf import settings
+
+from .models import Hospital
+
+
+logger = logging.getLogger(__name__)
+TOKEN_URL = "https://outpost.mapmyindia.com/api/security/oauth/token"
+NEARBY_URL = "https://atlas.mapmyindia.com/api/places/nearby/json"
+REQUEST_TIMEOUT_SECONDS = 10
 
 
 def get_access_token():
-    url = "https://outpost.mapmyindia.com/api/security/oauth/token"  
+    client_id = getattr(settings, "MAPMYINDIA_CLIENT_ID", "")
+    client_secret = getattr(settings, "MAPMYINDIA_CLIENT_SECRET", "")
+    if not client_id or not client_secret:
+        return None
 
-    data = {
-        "grant_type": "client_credentials",
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET
-    }
+    try:
+        response = requests.post(
+            TOKEN_URL,
+            data={
+                "grant_type": "client_credentials",
+                "client_id": client_id,
+                "client_secret": client_secret,
+            },
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        return response.json().get("access_token")
+    except (requests.RequestException, ValueError):
+        logger.exception("Unable to fetch MapMyIndia access token.")
+        return None
 
-    res = requests.post(url, data=data).json()
-    print("TOKEN RESPONSE:", res)
 
-    return res.get("access_token")
-
-
-def test_nearby():
+def get_nearby_hospitals(lat, lng, radius=5000):
     token = get_access_token()
+    if not token:
+        return []
 
-    url = "https://atlas.mapmyindia.com/api/places/nearby/json"
-
-    headers = {
-        "Authorization": f"Bearer {token}"
-    }
-
-    params = {
-        "keywords": "hospital",
-        "refLocation": "28.6,77.2",
-        "radius": 5000
-    }
-
-    res = requests.get(url, headers=headers, params=params).json()
+    try:
+        response = requests.get(
+            NEARBY_URL,
+            headers={"Authorization": f"Bearer {token}"},
+            params={
+                "keywords": "hospital",
+                "refLocation": f"{lat},{lng}",
+                "radius": radius,
+            },
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, ValueError):
+        logger.exception("Unable to fetch nearby hospitals from MapMyIndia.")
+        return []
 
     hospitals = []
 
-    for place in res.get("suggestedLocations", []):
-        hospitals.append({
-            "place_id": place.get("eLoc"),
-            "name": place.get("placeName"),
-            "lat": place.get("latitude"),
-            "lng": place.get("longitude"),
-            "address": place.get("placeAddress"),
-            "distance": place.get("distance")
-        })
-
-    print(hospitals)
-
-def get_nearby_hospitals(lat, lng):
-    token = get_access_token()
-
-    url = "https://atlas.mapmyindia.com/api/places/nearby/json"
-
-    headers = {
-        "Authorization": f"Bearer {token}"
-    }
-
-    params = {
-        "keywords": "hospital",
-        "refLocation": f"{lat},{lng}",
-        "radius": 5000
-    }
-
-    res = requests.get(url, headers=headers, params=params).json()
-
-    from .models import Hospital
-
-    hospitals = []
-
-    for place in res.get("suggestedLocations", []):
+    for place in payload.get("suggestedLocations", []):
         place_id = place.get("eLoc")
-        name = place.get("placeName")
-        lat = place.get("latitude")
-        lng = place.get("longitude")
-        address = place.get("placeAddress")
+        if not place_id:
+            continue
+
+        name = (place.get("placeName") or "Nearby Hospital").strip()
+        hospital_lat = place.get("latitude")
+        hospital_lng = place.get("longitude")
+        location = (place.get("placeAddress") or name).strip()
 
         hospital_obj, created = Hospital.objects.get_or_create(
             place_id=place_id,
             defaults={
                 "name": name,
-                "latitude": lat,
-                "longitude": lng,
-                "address": address,
-                "beds_available": 10,
-                "icu_available": False,
-                "wait_time": 15
+                "location": location,
+                "latitude": hospital_lat,
+                "longitude": hospital_lng,
+                "total_beds": 20,
+                "available_beds": 10,
+                "total_icu": 5,
+                "available_icu": 1,
+                "emergency_available": True,
+                "avg_wait_time": 15,
+            },
+        )
+
+        if not created:
+            updated_fields = []
+            if hospital_obj.name != name:
+                hospital_obj.name = name
+                updated_fields.append("name")
+            if hospital_obj.location != location:
+                hospital_obj.location = location
+                updated_fields.append("location")
+            if hospital_obj.latitude != hospital_lat:
+                hospital_obj.latitude = hospital_lat
+                updated_fields.append("latitude")
+            if hospital_obj.longitude != hospital_lng:
+                hospital_obj.longitude = hospital_lng
+                updated_fields.append("longitude")
+            if updated_fields:
+                hospital_obj.save(update_fields=updated_fields)
+
+        hospitals.append(
+            {
+                "id": hospital_obj.id,
+                "name": hospital_obj.name,
+                "lat": hospital_obj.latitude,
+                "lng": hospital_obj.longitude,
+                "location": hospital_obj.location,
+                "distance": place.get("distance"),
             }
         )
 
-        hospitals.append({
-            "id": hospital_obj.id,
-            "name": hospital_obj.name,
-            "lat": hospital_obj.latitude,
-            "lng": hospital_obj.longitude,
-            "address": hospital_obj.address,
-        })
     return hospitals

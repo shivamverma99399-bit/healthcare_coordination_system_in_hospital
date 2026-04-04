@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.contrib.auth import logout
 from django.db.models import Q
 from rest_framework import status
@@ -28,6 +29,7 @@ from .services import (
     analyze_symptoms,
     build_transfer_report,
     build_transfer_summary,
+    get_admin_access_scope,
     get_demo_access_profiles,
     get_hospital_recommendations,
     normalize_specialization_tag,
@@ -35,8 +37,18 @@ from .services import (
 )
 
 
+class HealthCheckView(APIView):
+    authentication_classes = []
+    permission_classes = []
+
+    def get(self, request):
+        return Response({"status": "ok"}, status=status.HTTP_200_OK)
+
+
 class DemoAccountsView(APIView):
     def get(self, request):
+        if not getattr(settings, "DEMO_ACCOUNTS_ENABLED", False):
+            return Response({"detail": "Demo accounts are disabled."}, status=status.HTTP_404_NOT_FOUND)
         return Response({"accounts": get_demo_access_profiles()}, status=status.HTTP_200_OK)
 
 
@@ -76,6 +88,9 @@ class LogoutView(APIView):
 
 
 class AnalyzeSymptomsView(APIView):
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
     def post(self, request):
         serializer = AnalyzeSymptomsSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -89,6 +104,9 @@ class AnalyzeSymptomsView(APIView):
 
 
 class HospitalRecommendationsView(APIView):
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
     def get(self, request):
         symptoms = request.query_params.get("symptoms", "")
         location = request.query_params.get("location", "")
@@ -129,6 +147,9 @@ class HospitalRecommendationsView(APIView):
 
 
 class DoctorsByHospitalView(APIView):
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
     def get(self, request):
         hospital_id = request.query_params.get("id") or request.query_params.get("hospital_id")
         specialization = request.query_params.get("specialization")
@@ -234,8 +255,13 @@ class AdminOverviewView(APIView):
     permission_classes = [IsAuthenticated, IsHospitalAdmin]
 
     def get(self, request):
-        admin_profile = request.user.hospital_admin_profile
-        managed_hospital = admin_profile.hospital
+        admin_scope = get_admin_access_scope(request.user)
+        managed_hospital = admin_scope["hospital"] if admin_scope else None
+        if not managed_hospital:
+            return Response(
+                {"detail": "No hospital is configured for this admin account."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
         records = (
             Booking.objects.filter(hospital=managed_hospital)
@@ -261,7 +287,14 @@ class AdminOverviewView(APIView):
 
         return Response(
             {
-                "profile": HospitalAdminProfileSerializer(admin_profile).data,
+                "profile": (
+                    HospitalAdminProfileSerializer(admin_scope["profile"]).data
+                    if admin_scope and admin_scope["profile"]
+                    else {
+                        "title": admin_scope["title"] if admin_scope else "Hospital Admin",
+                        "hospital": AdminHospitalSerializer(managed_hospital).data,
+                    }
+                ),
                 "managed_hospital": AdminHospitalSerializer(managed_hospital).data,
                 "network_hospitals": AdminHospitalSerializer(network_hospitals, many=True).data,
                 "analytics": {
@@ -286,14 +319,27 @@ class AdminHospitalUpdateView(APIView):
     permission_classes = [IsAuthenticated, IsHospitalAdmin]
 
     def patch(self, request, hospital_id):
-        admin_profile = request.user.hospital_admin_profile
-        if admin_profile.hospital_id != hospital_id:
+        admin_scope = get_admin_access_scope(request.user, hospital_id=hospital_id)
+        if not admin_scope:
+            return Response(
+                {"detail": "You do not have hospital admin access."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if not admin_scope["is_superuser"] and admin_scope["hospital"].id != hospital_id:
             return Response(
                 {"detail": "You can only update your assigned hospital."},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        serializer = AdminHospitalSerializer(admin_profile.hospital, data=request.data, partial=True)
+        hospital = Hospital.objects.filter(id=hospital_id).first() if admin_scope["is_superuser"] else admin_scope["hospital"]
+        if not hospital:
+            return Response(
+                {"detail": "Hospital not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        serializer = AdminHospitalSerializer(hospital, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -304,11 +350,11 @@ class AdminPatientRecordUpdateView(APIView):
     permission_classes = [IsAuthenticated, IsHospitalAdmin]
 
     def patch(self, request, booking_id):
-        admin_profile = request.user.hospital_admin_profile
+        admin_scope = get_admin_access_scope(request.user)
         booking = Booking.objects.filter(id=booking_id).select_related("hospital").first()
         if not booking:
             return Response({"detail": "Patient record not found."}, status=status.HTTP_404_NOT_FOUND)
-        if booking.hospital_id != admin_profile.hospital_id:
+        if admin_scope and not admin_scope["is_superuser"] and booking.hospital_id != admin_scope["hospital"].id:
             return Response(
                 {"detail": "You can only update records for your assigned hospital."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -317,6 +363,7 @@ class AdminPatientRecordUpdateView(APIView):
         serializer = PatientRecordUpdateSerializer(booking, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        booking.refresh_from_db()
         return Response(BookingRecordSerializer(booking).data, status=status.HTTP_200_OK)
 
 
@@ -325,7 +372,13 @@ class AdminTransferView(APIView):
     permission_classes = [IsAuthenticated, IsHospitalAdmin]
 
     def get(self, request):
-        managed_hospital = request.user.hospital_admin_profile.hospital
+        admin_scope = get_admin_access_scope(request.user)
+        managed_hospital = admin_scope["hospital"] if admin_scope else None
+        if not managed_hospital:
+            return Response(
+                {"detail": "No hospital is configured for this admin account."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
         outgoing = InterHospitalTransfer.objects.filter(source_hospital=managed_hospital).select_related(
             "booking",
             "source_hospital",
@@ -345,28 +398,38 @@ class AdminTransferView(APIView):
         )
 
     def post(self, request):
-        admin_profile = request.user.hospital_admin_profile
+        admin_scope = get_admin_access_scope(request.user)
+        if not admin_scope:
+            return Response(
+                {"detail": "You do not have hospital admin access."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         serializer = TransferCreateSerializer(
             data=request.data,
-            context={"admin_profile": admin_profile},
+            context={
+                "admin_hospital": admin_scope["hospital"],
+                "admin_profile": admin_scope["profile"],
+                "can_access_all_hospitals": admin_scope["is_superuser"],
+            },
         )
         serializer.is_valid(raise_exception=True)
 
         booking = serializer.validated_data["booking"]
         target_hospital = serializer.validated_data["target_hospital"]
+        source_hospital = admin_scope["hospital"] or booking.hospital
         transfer = InterHospitalTransfer.objects.create(
             booking=booking,
-            source_hospital=admin_profile.hospital,
+            source_hospital=source_hospital,
             target_hospital=target_hospital,
-            created_by=admin_profile,
+            created_by=admin_scope["profile"],
             report_title=f"{booking.patient_name} continuity of care report",
-            report_body=build_transfer_report(booking, admin_profile.hospital, target_hospital),
+            report_body=build_transfer_report(booking, source_hospital, target_hospital),
             report_format="PDF",
             summary=build_transfer_summary(booking, target_hospital),
             share_mode=serializer.validated_data["share_mode"],
             access_scope="Limited clinical view",
             receiving_team=serializer.validated_data.get("receiving_team", ""),
-            status="access_granted",
+            status="shared",
         )
         booking.status = "transferred"
         booking.save(update_fields=["status"])

@@ -21,8 +21,15 @@ Set these backend environment variables in Render:
 - `DJANGO_SECRET_KEY`
 - `DJANGO_CSRF_TRUSTED_ORIGINS`
 - `GEMINI_API_KEY` if you want Gemini analysis
+- `DATABASE_URL=sqlite:///db.sqlite3`
 
-Render will provide `DATABASE_URL` from the Postgres database declared in the blueprint.
+The current blueprint uses SQLite only. No Render Postgres or Supabase database is required.
+
+### Local SQLite
+
+For local development, the backend uses SQLite through:
+
+- `DATABASE_URL=sqlite:///healthcare_system/db.sqlite3`
 
 Suggested value for `DJANGO_CSRF_TRUSTED_ORIGINS` after the frontend is deployed:
 
@@ -53,5 +60,5 @@ The SPA rewrite config is in [vercel.json](/e:/PROJECTS/hospital/frontend/fronte
 ### Notes
 
 - Django static files are served through WhiteNoise.
-- Production uses Postgres when `DATABASE_URL` is present.
+- Production and local development both use SQLite unless you explicitly point `DATABASE_URL` elsewhere.
 - Local `.env` is separate from Render and Vercel dashboard environment variables.

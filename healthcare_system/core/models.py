@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 from django.contrib.auth.models import User
+from django.db import transaction
 from django.db import models
 from django.utils import timezone
 
@@ -95,6 +96,8 @@ class Availability(models.Model):
 
 
 class Booking(models.Model):
+    ACTIVE_QUEUE_STATUSES = {"scheduled", "under_review"}
+
     URGENCY_CHOICES = [
         ("normal", "Normal"),
         ("urgent", "Urgent"),
@@ -150,18 +153,41 @@ class Booking(models.Model):
         ordering = ["-created_at"]
 
     def save(self, *args, **kwargs):
-        if not self.token_number:
-            count = Booking.objects.filter(hospital=self.hospital).count()
-            self.token_number = count + 1
+        if not self.hospital_id:
+            raise ValueError("Booking requires a hospital before save.")
 
-            wait = count * 10
-            queue_time = timezone.now() + timedelta(minutes=wait)
-            self.expected_time = queue_time.time()
+        is_new = self._state.adding
+        update_fields = kwargs.get("update_fields")
+        track_queue = is_new or update_fields is None or "status" in update_fields
 
-            self.hospital.opd_load += 1
-            self.hospital.save(update_fields=["opd_load"])
+        with transaction.atomic():
+            Hospital.objects.select_for_update().get(pk=self.hospital_id)
 
-        super().save(*args, **kwargs)
+            previous_status = None
+            if track_queue and not is_new:
+                previous_status = (
+                    Booking.objects.filter(pk=self.pk).values_list("status", flat=True).first()
+                )
+
+            if not self.token_number:
+                max_token = (
+                    Booking.objects.filter(hospital_id=self.hospital_id).aggregate(
+                        max_token=models.Max("token_number")
+                    )["max_token"]
+                    or 0
+                )
+                self.token_number = max_token + 1
+                queue_time = timezone.now() + timedelta(minutes=max_token * 10)
+                self.expected_time = queue_time.time()
+
+            super().save(*args, **kwargs)
+
+            if track_queue and (is_new or previous_status != self.status):
+                active_count = Booking.objects.filter(
+                    hospital_id=self.hospital_id,
+                    status__in=self.ACTIVE_QUEUE_STATUSES,
+                ).count()
+                Hospital.objects.filter(pk=self.hospital_id).update(opd_load=active_count)
 
 
 class SosAlert(models.Model):

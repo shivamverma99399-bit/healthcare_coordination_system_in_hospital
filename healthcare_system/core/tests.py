@@ -64,6 +64,18 @@ class MedPulseApiTests(APITestCase):
             end_time=time(9, 30),
             is_booked=False,
         )
+        self.authenticated_patient_user = User.objects.create_user(
+            username="authenticated.patient@example.com",
+            email="authenticated.patient@example.com",
+            password="secret123",
+        )
+        self.authenticated_patient_profile = PatientProfile.objects.create(
+            user=self.authenticated_patient_user,
+            full_name="Authenticated Patient",
+            city="Delhi",
+            phone="9000000000",
+        )
+        self.authenticated_patient_token = Token.objects.create(user=self.authenticated_patient_user)
 
     def auth_headers(self, token):
         return {"HTTP_AUTHORIZATION": f"Token {token.key}"}
@@ -107,7 +119,34 @@ class MedPulseApiTests(APITestCase):
         self.assertEqual(booking.patient.full_name, "Asha Verma")
         self.assertEqual(booking.status, "scheduled")
 
-    def test_hospital_recommendations_include_breakdown(self):
+    def test_patient_login_rejects_wrong_password_for_existing_account(self):
+        existing_user = User.objects.create_user(
+            username="existing.patient@example.com",
+            email="existing.patient@example.com",
+            password="correct-password",
+        )
+        PatientProfile.objects.create(
+            user=existing_user,
+            full_name="Existing Patient",
+            city="Delhi",
+            phone="9191919191",
+        )
+
+        response = self.client.post(
+            "/api/auth/login",
+            {
+                "role": "patient",
+                "email": "existing.patient@example.com",
+                "password": "wrong-password",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["detail"][0], "Invalid patient credentials.")
+
+    @patch("core.services.analyze_symptoms_with_gemini", return_value=None)
+    def test_hospital_recommendations_include_breakdown(self, mock_gemini):
         response = self.client.get(
             "/api/hospitals/recommendations",
             {
@@ -117,13 +156,30 @@ class MedPulseApiTests(APITestCase):
                 "distance": "5",
                 "icu": "true",
             },
+            **self.auth_headers(self.authenticated_patient_token),
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]["hospital_name"], "City Hospital")
-        self.assertIn("score_breakdown", response.data[0])
-        self.assertIn("care_pathway", response.data[0])
+        self.assertTrue(response.data)
+        self.assertIn("City Hospital", [item["hospital_name"] for item in response.data])
+        for item in response.data:
+            self.assertLessEqual(item["distance"], 5)
+            self.assertGreater(item["icu_available"], 0)
+
+        city_result = next(item for item in response.data if item["hospital_name"] == "City Hospital")
+        self.assertIn("score_breakdown", city_result)
+        self.assertIn("care_pathway", city_result)
+
+    def test_hospital_recommendations_require_authentication(self):
+        response = self.client.get(
+            "/api/hospitals/recommendations",
+            {
+                "symptoms": "fever and weakness",
+                "location": "Delhi",
+            },
+        )
+
+        self.assertEqual(response.status_code, 401)
 
     def test_patient_dashboard_returns_history(self):
         patient_user = User.objects.create_user(
@@ -233,9 +289,85 @@ class MedPulseApiTests(APITestCase):
                 "urgency": "normal",
             },
             format="json",
+            **self.auth_headers(self.authenticated_patient_token),
         )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["tags"], ["cardiologist"])
         self.assertEqual(response.data["severity"], "medium")
         self.assertIn("summary", response.data)
+
+    def test_analyze_symptoms_requires_authentication(self):
+        response = self.client.post(
+            "/api/analyze-symptoms",
+            {
+                "symptoms": "Chest pain and palpitations",
+                "location": "Delhi",
+                "urgency": "normal",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_admin_hospital_update_rejects_invalid_capacity_values(self):
+        admin_user = User.objects.create_user(
+            username="capacity.admin@example.com",
+            email="capacity.admin@example.com",
+            password="adminpass123",
+        )
+        HospitalAdminProfile.objects.create(user=admin_user, hospital=self.city_hospital)
+        admin_token = Token.objects.create(user=admin_user)
+
+        response = self.client.patch(
+            f"/api/admin/hospitals/{self.city_hospital.id}",
+            {
+                "available_beds": self.city_hospital.total_beds + 1,
+                "available_icu": -1,
+            },
+            format="json",
+            **self.auth_headers(admin_token),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("available_beds", response.data)
+        self.assertIn("available_icu", response.data)
+
+    def test_superuser_can_login_via_email_and_access_admin_overview(self):
+        superuser = User.objects.create_superuser(
+            username="platform-root",
+            email="root@example.com",
+            password="rootpass123",
+        )
+
+        login_response = self.client.post(
+            "/api/auth/login",
+            {
+                "role": "hospital_admin",
+                "email": "root@example.com",
+                "password": "rootpass123",
+            },
+            format="json",
+        )
+
+        self.assertEqual(login_response.status_code, 200)
+        self.assertEqual(login_response.data["role"], "hospital_admin")
+        self.assertTrue(login_response.data["is_superuser"])
+        self.assertEqual(login_response.data["email"], superuser.email)
+        self.assertEqual(
+            login_response.data["profile"]["hospital"]["name"],
+            self.city_hospital.name,
+        )
+
+        token = Token.objects.get(key=login_response.data["token"])
+        overview_response = self.client.get(
+            "/api/admin/overview",
+            format="json",
+            **self.auth_headers(token),
+        )
+
+        self.assertEqual(overview_response.status_code, 200)
+        self.assertEqual(
+            overview_response.data["managed_hospital"]["name"],
+            self.city_hospital.name,
+        )

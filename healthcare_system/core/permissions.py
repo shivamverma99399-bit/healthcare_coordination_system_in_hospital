@@ -10,4 +10,8 @@ class IsPatientUser(BasePermission):
 class IsHospitalAdmin(BasePermission):
     def has_permission(self, request, view):
         user = getattr(request, "user", None)
-        return bool(user and user.is_authenticated and hasattr(user, "hospital_admin_profile"))
+        return bool(
+            user
+            and user.is_authenticated
+            and (getattr(user, "is_superuser", False) or hasattr(user, "hospital_admin_profile"))
+        )

@@ -8,6 +8,7 @@ from .views import (
     BookAppointmentView,
     DemoAccountsView,
     DoctorsByHospitalView,
+    HealthCheckView,
     HospitalRecommendationsView,
     LoginView,
     LogoutView,
@@ -17,6 +18,7 @@ from .views import (
 )
 
 urlpatterns = [
+    path("health", HealthCheckView.as_view(), name="health"),
     path("auth/demo-accounts", DemoAccountsView.as_view(), name="demo-accounts"),
     path("auth/login", LoginView.as_view(), name="auth-login"),
     path("auth/session", SessionView.as_view(), name="auth-session"),

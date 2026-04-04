@@ -1,17 +1,26 @@
 import json
+import logging
 
 from django.conf import settings
 
 
 VALID_URGENCY_LEVELS = {"normal", "urgent", "critical"}
+logger = logging.getLogger(__name__)
 
 
 def get_gemini_model():
+    if not getattr(settings, "GEMINI_ENABLED", False):
+        return None
+
     api_key = getattr(settings, "GEMINI_API_KEY", "")
     if not api_key:
         return None
 
-    import google.generativeai as genai
+    try:
+        import google.generativeai as genai
+    except ImportError:
+        logger.warning("google.generativeai is not installed; falling back to rule-based analysis.")
+        return None
 
     genai.configure(api_key=api_key)
     return genai.GenerativeModel(getattr(settings, "GEMINI_MODEL", "gemini-1.5-flash"))
@@ -25,11 +34,15 @@ def analyze_symptoms_with_gemini(symptoms, fallback_urgency="normal"):
     prompt = build_prompt(symptoms, fallback_urgency)
 
     try:
-        response = model.generate_content(prompt)
+        response = model.generate_content(
+            prompt,
+            request_options={"timeout": getattr(settings, "GEMINI_TIMEOUT_SECONDS", 8)},
+        )
         raw_text = getattr(response, "text", "") or ""
         parsed = parse_ai_json(raw_text)
         return normalize_ai_response(parsed, symptoms, fallback_urgency)
     except Exception:
+        logger.exception("Gemini symptom analysis failed; falling back to rule-based analysis.")
         return None
 
 

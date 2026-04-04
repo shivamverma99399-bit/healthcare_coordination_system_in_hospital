@@ -3,6 +3,7 @@ from datetime import date, timedelta, time
 from django.core.management.base import BaseCommand
 
 from core.models import Availability, Doctor, Hospital
+from core.services import ensure_demo_access_profiles
 
 
 class Command(BaseCommand):
@@ -74,4 +75,5 @@ class Command(BaseCommand):
                             defaults={"end_time": time(start_hour, 30)},
                         )
 
-        self.stdout.write(self.style.SUCCESS("Demo data seeded successfully."))
+        ensure_demo_access_profiles()
+        self.stdout.write(self.style.SUCCESS("Demo data and access profiles seeded successfully."))

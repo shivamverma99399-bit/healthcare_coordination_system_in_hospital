@@ -1,8 +1,10 @@
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
+from django.db import transaction
 from rest_framework import serializers
 
 from .models import (
+    Availability,
     Booking,
     Doctor,
     Hospital,
@@ -11,7 +13,7 @@ from .models import (
     PatientProfile,
     SosAlert,
 )
-from .services import get_demo_access_profiles, normalize_specialization_tag
+from .services import maybe_seed_demo_access_profiles, normalize_specialization_tag
 
 
 def format_slot_label(slot):
@@ -44,11 +46,10 @@ class LoginSerializer(serializers.Serializer):
     emergency_contact = serializers.CharField(required=False, allow_blank=True, default="")
 
     def validate(self, attrs):
-        get_demo_access_profiles()
-
         role = attrs["role"]
         email = attrs["email"].strip().lower()
         password = attrs["password"]
+        maybe_seed_demo_access_profiles(email, role=role)
 
         if role == "patient":
             attrs["user"] = self._resolve_patient_user(
@@ -61,18 +62,45 @@ class LoginSerializer(serializers.Serializer):
             )
             return attrs
 
-        user = authenticate(username=email, password=password)
-        if not user or not hasattr(user, "hospital_admin_profile"):
+        user = self._authenticate_admin_user(email, password)
+        if not user or not (getattr(user, "is_superuser", False) or hasattr(user, "hospital_admin_profile")):
             raise serializers.ValidationError({"detail": "Invalid hospital admin credentials."})
 
         attrs["user"] = user
         return attrs
 
-    def _resolve_patient_user(self, email, password, full_name, city, phone, emergency_contact):
-        user = User.objects.filter(email=email, patient_profile__isnull=False).first()
+    def _authenticate_admin_user(self, identifier, password):
+        user = authenticate(username=identifier, password=password)
         if user:
-            self._sync_patient_user(user, email, password, full_name)
-            self._sync_patient_profile(user, email, full_name, city, phone, emergency_contact)
+            return user
+
+        existing_users = list(User.objects.filter(email__iexact=identifier).order_by("id")[:2])
+        if len(existing_users) > 1:
+            raise serializers.ValidationError(
+                {"detail": "Multiple admin accounts were found for this email address."}
+            )
+
+        matched_user = existing_users[0] if existing_users else None
+        if not matched_user:
+            return None
+
+        return authenticate(username=matched_user.username, password=password)
+
+    def _resolve_patient_user(self, email, password, full_name, city, phone, emergency_contact):
+        existing_users = list(
+            User.objects.filter(email=email, patient_profile__isnull=False).order_by("id")[:2]
+        )
+        if len(existing_users) > 1:
+            raise serializers.ValidationError(
+                {"detail": "Multiple patient accounts were found for this email address."}
+            )
+
+        user = existing_users[0] if existing_users else None
+        if user:
+            if not user.check_password(password):
+                raise serializers.ValidationError({"detail": "Invalid patient credentials."})
+            self._sync_patient_user(user, email, full_name)
+            self._sync_patient_profile(user, full_name, city, phone, emergency_contact)
             return user
 
         resolved_name = full_name.strip() or self._name_from_email(email)
@@ -84,7 +112,7 @@ class LoginSerializer(serializers.Serializer):
             first_name=first_name,
             last_name=last_name,
         )
-        self._sync_patient_profile(user, email, resolved_name, city, phone, emergency_contact)
+        self._sync_patient_profile(user, resolved_name, city, phone, emergency_contact)
         return user
 
     def _name_from_email(self, email):
@@ -105,7 +133,7 @@ class LoginSerializer(serializers.Serializer):
                 return candidate
             suffix += 1
 
-    def _sync_patient_user(self, user, email, password, full_name):
+    def _sync_patient_user(self, user, email, full_name):
         resolved_name = full_name.strip() or user.get_full_name() or self._name_from_email(email)
         first_name, _, last_name = resolved_name.partition(" ")
         changed = False
@@ -119,15 +147,12 @@ class LoginSerializer(serializers.Serializer):
         if user.last_name != last_name:
             user.last_name = last_name
             changed = True
-        if password and not user.check_password(password):
-            user.set_password(password)
-            changed = True
 
         if changed:
             user.save()
 
-    def _sync_patient_profile(self, user, email, full_name, city, phone, emergency_contact):
-        resolved_name = full_name.strip() or user.get_full_name() or self._name_from_email(email)
+    def _sync_patient_profile(self, user, full_name, city, phone, emergency_contact):
+        resolved_name = full_name.strip() or user.get_full_name() or self._name_from_email(user.email)
         PatientProfile.objects.update_or_create(
             user=user,
             defaults={
@@ -175,7 +200,19 @@ class DoctorDirectorySerializer(serializers.ModelSerializer):
         fields = ["id", "name", "specialization", "timing", "available", "time_slots"]
 
     def _open_slots(self, obj):
-        return list(obj.availabilities.filter(is_booked=False).order_by("date", "start_time"))
+        if not hasattr(self, "_open_slot_cache"):
+            self._open_slot_cache = {}
+
+        if obj.pk not in self._open_slot_cache:
+            slots = [
+                slot
+                for slot in obj.availabilities.all()
+                if not slot.is_booked
+            ]
+            slots.sort(key=lambda slot: (slot.date, slot.start_time))
+            self._open_slot_cache[obj.pk] = slots
+
+        return self._open_slot_cache[obj.pk]
 
     def get_timing(self, obj):
         return format_timing_range(self._open_slots(obj))
@@ -241,31 +278,62 @@ class BookingCreateSerializer(serializers.Serializer):
         return None
 
     def create(self, validated_data):
-        doctor = validated_data["doctor"]
-        hospital = validated_data["hospital"]
-        availability = validated_data["availability"]
+        with transaction.atomic():
+            availability = (
+                Availability.objects.select_for_update()
+                .select_related("doctor", "doctor__hospital")
+                .get(pk=validated_data["availability"].pk)
+            )
+            if availability.is_booked:
+                raise serializers.ValidationError(
+                    {"time": "Selected doctor is no longer available at that time."}
+                )
 
-        booking = Booking.objects.create(
-            patient=validated_data["patient"],
-            hospital=hospital,
-            doctor=doctor,
-            availability=availability,
-            patient_name=validated_data["patient_name"],
-            phone=validated_data["phone"],
-            urgency=validated_data["urgency"],
-            symptoms=validated_data.get("symptoms", ""),
-            ai_summary=validated_data.get("ai_summary", ""),
-            recommended_specializations=validated_data.get("recommended_specializations", []),
-            next_steps=validated_data.get("next_steps", ""),
-        )
+            booking = Booking.objects.create(
+                patient=validated_data["patient"],
+                hospital=validated_data["hospital"],
+                doctor=validated_data["doctor"],
+                availability=availability,
+                patient_name=validated_data["patient_name"],
+                phone=validated_data["phone"],
+                urgency=validated_data["urgency"],
+                symptoms=validated_data.get("symptoms", ""),
+                ai_summary=validated_data.get("ai_summary", ""),
+                recommended_specializations=validated_data.get("recommended_specializations", []),
+                next_steps=validated_data.get("next_steps", ""),
+            )
 
-        availability.is_booked = True
-        availability.save(update_fields=["is_booked"])
+            availability.is_booked = True
+            availability.save(update_fields=["is_booked"])
 
         return booking
 
 
 class AdminHospitalSerializer(serializers.ModelSerializer):
+    def validate(self, attrs):
+        instance = getattr(self, "instance", None)
+        data = {
+            "total_beds": attrs.get("total_beds", instance.total_beds if instance else 0),
+            "available_beds": attrs.get("available_beds", instance.available_beds if instance else 0),
+            "total_icu": attrs.get("total_icu", instance.total_icu if instance else 0),
+            "available_icu": attrs.get("available_icu", instance.available_icu if instance else 0),
+        }
+
+        errors = {}
+        for field_name, value in data.items():
+            if value < 0:
+                errors[field_name] = "Value cannot be negative."
+
+        if data["available_beds"] > data["total_beds"]:
+            errors["available_beds"] = "Available beds cannot exceed total beds."
+        if data["available_icu"] > data["total_icu"]:
+            errors["available_icu"] = "Available ICU beds cannot exceed total ICU beds."
+
+        if errors:
+            raise serializers.ValidationError(errors)
+
+        return attrs
+
     class Meta:
         model = Hospital
         fields = [
@@ -378,7 +446,8 @@ class TransferCreateSerializer(serializers.Serializer):
     receiving_team = serializers.CharField(required=False, allow_blank=True, default="")
 
     def validate(self, attrs):
-        admin_profile = self.context["admin_profile"]
+        admin_hospital = self.context.get("admin_hospital")
+        can_access_all_hospitals = self.context.get("can_access_all_hospitals", False)
         booking = (
             Booking.objects.filter(id=attrs["booking_id"])
             .select_related("hospital", "doctor", "patient")
@@ -386,7 +455,7 @@ class TransferCreateSerializer(serializers.Serializer):
         )
         if not booking:
             raise serializers.ValidationError({"booking_id": "Patient record not found."})
-        if booking.hospital_id != admin_profile.hospital_id:
+        if not can_access_all_hospitals and (not admin_hospital or booking.hospital_id != admin_hospital.id):
             raise serializers.ValidationError(
                 {"booking_id": "You can only share records from your managed hospital."}
             )
@@ -394,7 +463,8 @@ class TransferCreateSerializer(serializers.Serializer):
         target_hospital = Hospital.objects.filter(id=attrs["target_hospital_id"]).first()
         if not target_hospital:
             raise serializers.ValidationError({"target_hospital_id": "Hospital not found."})
-        if target_hospital.id == admin_profile.hospital_id:
+        source_hospital_id = admin_hospital.id if admin_hospital else booking.hospital_id
+        if target_hospital.id == source_hospital_id:
             raise serializers.ValidationError(
                 {"target_hospital_id": "Choose a different hospital for inter-hospital sharing."}
             )

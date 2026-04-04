@@ -1,11 +1,31 @@
-import importlib.util
 import os
+import secrets
+import sys
 from pathlib import Path
+from urllib.parse import unquote, urlparse
+
+try:
+    import whitenoise  # noqa: F401
+except ImportError:
+    whitenoise = None
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-HAS_WHITENOISE = importlib.util.find_spec("whitenoise") is not None
-HAS_DJ_DATABASE_URL = importlib.util.find_spec("dj_database_url") is not None
+
+def load_env_file(env_path):
+    if not env_path.exists():
+        return
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+
+
+load_env_file(BASE_DIR.parent / ".env")
 
 
 def env_bool(name, default=False):
@@ -15,15 +35,40 @@ def env_bool(name, default=False):
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def env_int(name, default=0):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value.strip())
+    except (TypeError, ValueError):
+        return default
+
+
 def env_list(name, default=""):
     value = os.getenv(name, default)
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
-SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "django-insecure-q_i*%j7v$w%v&@zy)98w&1vg^_mtmbuhcv#8)*u7dbicouqps4")
 DEBUG = env_bool("DJANGO_DEBUG", True)
+RUNNING_TESTS = len(sys.argv) > 1 and sys.argv[1] == "test"
+RUNNING_DEVELOPMENT_SERVER = len(sys.argv) > 1 and sys.argv[1] == "runserver"
+
+SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "").strip()
+if not SECRET_KEY:
+    if DEBUG:
+        SECRET_KEY = secrets.token_urlsafe(50)
+    else:
+        raise RuntimeError("DJANGO_SECRET_KEY not set")
+
 ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", "127.0.0.1,localhost")
 CSRF_TRUSTED_ORIGINS = env_list("DJANGO_CSRF_TRUSTED_ORIGINS")
+CORS_ALLOWED_ORIGINS = env_list(
+    "DJANGO_CORS_ALLOWED_ORIGINS",
+    "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080,http://127.0.0.1:8080"
+    if DEBUG
+    else "",
+)
 
 render_hostname = os.getenv("RENDER_EXTERNAL_HOSTNAME", "").strip()
 if render_hostname and render_hostname not in ALLOWED_HOSTS:
@@ -35,6 +80,14 @@ if render_external_url and render_external_url not in CSRF_TRUSTED_ORIGINS:
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+GEMINI_ENABLED = env_bool(
+    "GEMINI_ENABLED",
+    bool(GEMINI_API_KEY) and not RUNNING_TESTS,
+)
+GEMINI_TIMEOUT_SECONDS = env_int("GEMINI_TIMEOUT_SECONDS", 8)
+DEMO_ACCOUNTS_ENABLED = env_bool("DJANGO_ENABLE_DEMO_ACCOUNTS", False)
+MAPMYINDIA_CLIENT_ID = os.getenv("MAPMYINDIA_CLIENT_ID", "").strip()
+MAPMYINDIA_CLIENT_SECRET = os.getenv("MAPMYINDIA_CLIENT_SECRET", "").strip()
 
 
 INSTALLED_APPS = [
@@ -49,6 +102,7 @@ INSTALLED_APPS = [
     'core',
 ]
 
+
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -60,10 +114,12 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-if HAS_WHITENOISE:
+if whitenoise is not None and not RUNNING_DEVELOPMENT_SERVER:
     MIDDLEWARE.insert(1, 'whitenoise.middleware.WhiteNoiseMiddleware')
 
+
 ROOT_URLCONF = 'healthcare_system.urls'
+
 
 TEMPLATES = [
     {
@@ -80,26 +136,40 @@ TEMPLATES = [
     },
 ]
 
+
 WSGI_APPLICATION = 'healthcare_system.wsgi.application'
 
-sqlite_path = os.getenv("SQLITE_PATH")
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+
+
+def parse_database_url(database_url):
+    parsed = urlparse(database_url)
+
+    if parsed.scheme == "sqlite":
+        db_name = unquote(parsed.path.lstrip("/")) or str(BASE_DIR / "db.sqlite3")
+        return {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": db_name,
+        }
+
+    return {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": BASE_DIR / "db.sqlite3",
+    }
+
+
+if DATABASE_URL:
+    default_database = parse_database_url(DATABASE_URL)
+else:
+    default_database = {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": BASE_DIR / "db.sqlite3",
+    }
 
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': sqlite_path or (BASE_DIR / 'db.sqlite3'),
-    }
+    "default": default_database,
 }
 
-database_url = os.getenv("DATABASE_URL", "").strip()
-if database_url and HAS_DJ_DATABASE_URL:
-    import dj_database_url
-
-    DATABASES["default"] = dj_database_url.parse(
-        database_url,
-        conn_max_age=600,
-        ssl_require=not DEBUG,
-    )
 
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -116,15 +186,17 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
+
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_TZ = True
 
-STATIC_URL = 'static/'
+
+STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
-if HAS_WHITENOISE:
+if whitenoise is not None and not RUNNING_DEVELOPMENT_SERVER:
     STORAGES = {
         "staticfiles": {
             "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
@@ -134,12 +206,15 @@ if HAS_WHITENOISE:
         },
     }
 
+
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.TokenAuthentication',
     ],
 }
+
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'

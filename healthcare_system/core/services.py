@@ -1,5 +1,7 @@
 from math import asin, cos, radians, sin, sqrt
+import re
 
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.db import DatabaseError
 from django.db import transaction
@@ -142,10 +144,21 @@ URGENCY_WEIGHT = {
 }
 
 LOCATION_COORDINATES = {
+    "central delhi": (28.6145, 77.2092),
+    "connaught place": (28.6315, 77.2167),
     "delhi": (28.6139, 77.2090),
     "new delhi": (28.6139, 77.2090),
     "gurgaon": (28.4595, 77.0266),
+    "gurugram": (28.4595, 77.0266),
     "noida": (28.5355, 77.3910),
+    "noida extension": (28.6400, 77.4300),
+    "ghaziabad": (28.6692, 77.4538),
+    "okhla": (28.5619, 77.2749),
+    "sarita vihar": (28.5402, 77.2837),
+    "saket": (28.5245, 77.2066),
+    "dwarka": (28.5921, 77.0460),
+    "rajinder nagar": (28.6386, 77.1894),
+    "pusa road": (28.6434, 77.1897),
     "bengaluru": (12.9716, 77.5946),
     "bangalore": (12.9716, 77.5946),
     "mumbai": (19.0760, 72.8777),
@@ -162,10 +175,11 @@ DEMO_PATIENT = {
 
 DEMO_ADMIN_PASSWORD = "admin123"
 FALLBACK_DEMO_ADMIN_HOSPITALS = [
-    "Metro General Hospital",
-    "Apollo Hospital",
-    "City Care Hospital",
+    "Demo Hospital 1",
+    "Demo Hospital 2",
+    "Demo Hospital 3",
 ]
+DEMO_ADMIN_EMAIL_PATTERN = re.compile(r"^admin\d+@medpulse\.local$")
 
 
 def split_name(full_name):
@@ -177,11 +191,34 @@ def split_name(full_name):
 
 
 def role_for_user(user):
-    if hasattr(user, "hospital_admin_profile"):
+    if getattr(user, "is_superuser", False) or hasattr(user, "hospital_admin_profile"):
         return "hospital_admin"
     if hasattr(user, "patient_profile"):
         return "patient"
     return "unknown"
+
+
+def get_admin_access_scope(user, hospital_id=None):
+    if hasattr(user, "hospital_admin_profile"):
+        profile = user.hospital_admin_profile
+        return {
+            "is_superuser": False,
+            "title": profile.title,
+            "hospital": profile.hospital,
+            "profile": profile,
+        }
+
+    if getattr(user, "is_superuser", False):
+        hospitals = Hospital.objects.order_by("name")
+        hospital = hospitals.filter(id=hospital_id).first() if hospital_id is not None else hospitals.first()
+        return {
+            "is_superuser": True,
+            "title": "Platform Superuser",
+            "hospital": hospital,
+            "profile": None,
+        }
+
+    return None
 
 
 def serialize_access_session(user, token_key):
@@ -202,15 +239,21 @@ def serialize_access_session(user, token_key):
             "emergency_contact": profile.emergency_contact,
         }
     elif role == "hospital_admin":
-        profile = user.hospital_admin_profile
+        profile = get_admin_access_scope(user)
+        hospital = profile["hospital"] if profile else None
         payload["profile"] = {
-            "title": profile.title,
-            "hospital": {
-                "id": profile.hospital.id,
-                "name": profile.hospital.name,
-                "location": profile.hospital.location,
-            },
+            "title": profile["title"] if profile else "Hospital Admin",
+            "hospital": (
+                {
+                    "id": hospital.id,
+                    "name": hospital.name,
+                    "location": hospital.location,
+                }
+                if hospital
+                else None
+            ),
         }
+        payload["is_superuser"] = bool(getattr(user, "is_superuser", False))
 
     return payload
 
@@ -268,6 +311,19 @@ def _demo_accounts_snapshot():
         )
 
     return accounts
+
+
+def is_demo_account_enabled():
+    return bool(getattr(settings, "DEMO_ACCOUNTS_ENABLED", False))
+
+
+def is_demo_account_email(email, role=None):
+    normalized = (email or "").strip().lower()
+    if role == "patient":
+        return normalized == DEMO_PATIENT["email"]
+    if role == "hospital_admin":
+        return bool(DEMO_ADMIN_EMAIL_PATTERN.match(normalized))
+    return normalized == DEMO_PATIENT["email"] or bool(DEMO_ADMIN_EMAIL_PATTERN.match(normalized))
 
 
 @transaction.atomic
@@ -328,10 +384,21 @@ def ensure_demo_access_profiles():
 
 
 def get_demo_access_profiles():
+    if not is_demo_account_enabled():
+        return []
     try:
         return ensure_demo_access_profiles()
     except DatabaseError:
         return _demo_accounts_snapshot()
+
+
+def maybe_seed_demo_access_profiles(email, role=None):
+    if not is_demo_account_enabled() or not is_demo_account_email(email, role=role):
+        return
+    try:
+        ensure_demo_access_profiles()
+    except DatabaseError:
+        return
 
 
 def analyze_symptoms(symptoms, location="", urgency="normal"):
@@ -676,7 +743,18 @@ def resolve_coordinates(location, latitude=None, longitude=None):
         return latitude, longitude
 
     normalized_location = (location or "").strip().lower()
-    return LOCATION_COORDINATES.get(normalized_location, (None, None))
+    if not normalized_location:
+        return None, None
+
+    direct_match = LOCATION_COORDINATES.get(normalized_location)
+    if direct_match:
+        return direct_match
+
+    for known_location, coordinates in LOCATION_COORDINATES.items():
+        if known_location in normalized_location or normalized_location in known_location:
+            return coordinates
+
+    return None, None
 
 
 def calculate_distance_km(source_lat, source_lng, target_lat, target_lng):
