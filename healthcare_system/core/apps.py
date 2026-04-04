@@ -5,10 +5,17 @@ class CoreConfig(AppConfig):
     name = 'core'
 
     def ready(self):
-        from django.contrib.auth.models import User
-        if not User.objects.filter(username="admin").exists():
-            User.objects.create_superuser(
-                username="admin",
-                email="admin@gmail.com",
-                password="admin123"
-            )
+        import os
+        if os.environ.get("RUN_MAIN") != "true":
+            return
+
+        try:
+            from django.contrib.auth.models import User
+            if not User.objects.filter(username="admin").exists():
+                User.objects.create_superuser(
+                    username="admin",
+                    email="admin@gmail.com",
+                    password="admin123"
+                )
+        except Exception:
+            pass
