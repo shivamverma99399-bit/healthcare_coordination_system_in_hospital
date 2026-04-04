@@ -1,70 +1,97 @@
-# Getting Started with Create React App
+# MEDPULSE Frontend
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+This is the Vite + React frontend for MEDPULSE.
 
-## Available Scripts
+## Stack
 
-In the project directory, you can run:
+- React 19
+- React Router 7
+- Vite 6
+- Axios
+- Tailwind CSS
+- Framer Motion
 
-### `npm start`
+## Scripts
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+Run these inside `frontend/`:
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+```powershell
+npm install
+npm run dev
+npm run build
+npm run preview
+```
 
-### `npm test`
+## Local Development
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+Create a local env file:
 
-### `npm run build`
+```powershell
+Copy-Item .env.example .env
+```
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+Example:
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+```env
+VITE_API_URL=http://127.0.0.1:8000
+VITE_DEV_PROXY_TARGET=
+```
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+Start the frontend:
 
-### `npm run eject`
+```powershell
+npm run dev
+```
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+Default dev URL:
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+- `http://localhost:5173`
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+## API Configuration
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+The frontend uses:
 
-## Learn More
+- [src/config/api.js](e:\PROJECTS\hospital\frontend\src\config\api.js#L1)
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+Rules:
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+- `VITE_API_URL` should be the backend base URL
+- do not append `/api` to `VITE_API_URL`
+- production should not rely on the Vite dev proxy
 
-### Code Splitting
+Example production value:
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+```env
+VITE_API_URL=https://healthcare-coordination-system-in.onrender.com
+```
 
-### Analyzing the Bundle Size
+## Demo Auth Notes
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+The current UI includes a frontend-only demo auth experience:
 
-### Making a Progressive Web App
+- patient login uses local validation and `localStorage`
+- admin login uses local validation and `localStorage`
+- logout clears the stored session
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+Some demo-only dashboard behaviors also use `localStorage`, including PDF uploads and local UI persistence.
 
-### Advanced Configuration
+## Deployment
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
+Deploy this frontend from:
 
-### Deployment
+- project root on Vercel: `frontend`
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
+Routing rewrites are handled by:
 
-### `npm run build` fails to minify
+- [vercel.json](e:\PROJECTS\hospital\frontend\vercel.json)
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+Required Vercel env var:
+
+```env
+VITE_API_URL=https://your-render-backend.onrender.com
+```
+
+## Related Docs
+
+- [Project README](e:\PROJECTS\hospital\README.md)
+- [Deployment Guide](e:\PROJECTS\hospital\DEPLOYMENT.md)
