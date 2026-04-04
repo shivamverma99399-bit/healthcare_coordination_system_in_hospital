@@ -117,7 +117,7 @@ class MedPulseApiTests(APITestCase):
         self.assertTrue(self.slot.is_booked)
         booking = Booking.objects.get(id=booking_response.data["booking_id"])
         self.assertEqual(booking.patient.full_name, "Asha Verma")
-        self.assertEqual(booking.status, "scheduled")
+        self.assertEqual(booking.status, "pending")
 
     def test_patient_login_rejects_wrong_password_for_existing_account(self):
         existing_user = User.objects.create_user(
@@ -144,6 +144,21 @@ class MedPulseApiTests(APITestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["detail"][0], "Invalid patient credentials.")
+
+    def test_patient_login_rejects_invalid_phone_number(self):
+        response = self.client.post(
+            "/api/auth/login",
+            {
+                "role": "patient",
+                "email": "asha@example.com",
+                "password": "secret123",
+                "phone": "12345",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["phone"][0], "Mobile number must be exactly 10 digits.")
 
     @patch("core.services.analyze_symptoms_with_gemini", return_value=None)
     def test_hospital_recommendations_include_breakdown(self, mock_gemini):
@@ -371,3 +386,260 @@ class MedPulseApiTests(APITestCase):
             overview_response.data["managed_hospital"]["name"],
             self.city_hospital.name,
         )
+
+    def test_admin_overview_includes_booked_appointments_for_managed_hospital(self):
+        patient_user = User.objects.create_user(
+            username="patient3@example.com",
+            email="patient3@example.com",
+            password="secret123",
+        )
+        patient_profile = PatientProfile.objects.create(
+            user=patient_user,
+            full_name="Patient Three",
+            city="Delhi",
+            phone="8080808080",
+        )
+        booking = Booking.objects.create(
+            patient=patient_profile,
+            hospital=self.city_hospital,
+            doctor=self.general_doctor,
+            availability=self.slot,
+            patient_name="Patient Three",
+            phone="8080808080",
+            symptoms="High fever",
+            ai_summary="Observation required.",
+            urgency="urgent",
+            status="scheduled",
+        )
+
+        admin_user = User.objects.create_user(
+            username="overview.admin@example.com",
+            email="overview.admin@example.com",
+            password="adminpass123",
+        )
+        HospitalAdminProfile.objects.create(user=admin_user, hospital=self.city_hospital)
+        admin_token = Token.objects.create(user=admin_user)
+
+        response = self.client.get(
+            "/api/admin/overview",
+            format="json",
+            **self.auth_headers(admin_token),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["analytics"]["appointments"], 1)
+        self.assertEqual(len(response.data["appointments"]), 1)
+        self.assertEqual(response.data["appointments"][0]["id"], booking.id)
+        self.assertEqual(response.data["appointments"][0]["patient_full_name"], "Patient Three")
+        self.assertEqual(response.data["patient_records"][0]["symptoms"], "High fever")
+
+    def test_admin_can_create_patient_record_for_existing_hospital_patient(self):
+        patient_user = User.objects.create_user(
+            username="patient4@example.com",
+            email="patient4@example.com",
+            password="secret123",
+        )
+        patient_profile = PatientProfile.objects.create(
+            user=patient_user,
+            full_name="Patient Four",
+            city="Delhi",
+            phone="7070707070",
+        )
+        Booking.objects.create(
+            patient=patient_profile,
+            hospital=self.city_hospital,
+            doctor=self.general_doctor,
+            availability=self.slot,
+            patient_name="Patient Four",
+            phone="7070707070",
+            symptoms="Headache",
+            ai_summary="Initial appointment",
+            urgency="normal",
+            status="scheduled",
+        )
+
+        admin_user = User.objects.create_user(
+            username="record.admin@example.com",
+            email="record.admin@example.com",
+            password="adminpass123",
+        )
+        HospitalAdminProfile.objects.create(user=admin_user, hospital=self.city_hospital)
+        admin_token = Token.objects.create(user=admin_user)
+
+        response = self.client.post(
+            "/api/admin/patient-records",
+            {
+                "patient_id": patient_profile.id,
+                "symptoms": "Follow-up headache and dizziness",
+                "ai_summary": "MRI advised",
+                "next_steps": "Upload scan reports and review in 3 days.",
+                "urgency": "urgent",
+                "status": "under_review",
+            },
+            format="json",
+            **self.auth_headers(admin_token),
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["patient_full_name"], "Patient Four")
+        self.assertEqual(response.data["ai_summary"], "MRI advised")
+        created_record = Booking.objects.get(id=response.data["id"])
+        self.assertEqual(created_record.hospital, self.city_hospital)
+        self.assertEqual(created_record.patient, patient_profile)
+        self.assertIsNone(created_record.doctor)
+
+    def test_patient_can_cancel_own_appointment(self):
+        booking = Booking.objects.create(
+            patient=self.authenticated_patient_profile,
+            hospital=self.city_hospital,
+            doctor=self.general_doctor,
+            availability=self.slot,
+            patient_name="Authenticated Patient",
+            phone="9000000000",
+            symptoms="Fever",
+            urgency="normal",
+            status="pending",
+        )
+        self.slot.is_booked = True
+        self.slot.save(update_fields=["is_booked"])
+
+        response = self.client.patch(
+            f"/api/patient/appointments/{booking.id}/status",
+            {"status": "cancelled"},
+            format="json",
+            **self.auth_headers(self.authenticated_patient_token),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        booking.refresh_from_db()
+        self.slot.refresh_from_db()
+        self.assertEqual(booking.status, "cancelled")
+        self.assertFalse(self.slot.is_booked)
+
+    def test_patient_can_delete_own_record(self):
+        booking = Booking.objects.create(
+            patient=self.authenticated_patient_profile,
+            hospital=self.city_hospital,
+            doctor=self.general_doctor,
+            availability=self.slot,
+            patient_name="Authenticated Patient",
+            phone="9000000000",
+            symptoms="Fever",
+            urgency="normal",
+            status="pending",
+        )
+        self.slot.is_booked = True
+        self.slot.save(update_fields=["is_booked"])
+
+        response = self.client.delete(
+            f"/api/patient/records/{booking.id}",
+            format="json",
+            **self.auth_headers(self.authenticated_patient_token),
+        )
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(Booking.objects.filter(id=booking.id).exists())
+        self.slot.refresh_from_db()
+        self.assertFalse(self.slot.is_booked)
+
+    def test_admin_can_accept_appointment_only_for_managed_hospital(self):
+        patient_user = User.objects.create_user(
+            username="patient5@example.com",
+            email="patient5@example.com",
+            password="secret123",
+        )
+        patient_profile = PatientProfile.objects.create(
+            user=patient_user,
+            full_name="Patient Five",
+            city="Delhi",
+            phone="6060606060",
+        )
+        booking = Booking.objects.create(
+            patient=patient_profile,
+            hospital=self.city_hospital,
+            doctor=self.general_doctor,
+            availability=self.slot,
+            patient_name="Patient Five",
+            phone="6060606060",
+            symptoms="Chest pain",
+            urgency="urgent",
+            status="pending",
+        )
+
+        admin_user = User.objects.create_user(
+            username="accept.admin@example.com",
+            email="accept.admin@example.com",
+            password="adminpass123",
+        )
+        HospitalAdminProfile.objects.create(user=admin_user, hospital=self.city_hospital)
+        admin_token = Token.objects.create(user=admin_user)
+
+        response = self.client.patch(
+            f"/api/admin/appointments/{booking.id}/status",
+            {"status": "accepted"},
+            format="json",
+            **self.auth_headers(admin_token),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, "accepted")
+
+    def test_admin_profile_endpoint_returns_logged_in_profile(self):
+        admin_user = User.objects.create_user(
+            username="profile.admin@example.com",
+            email="profile.admin@example.com",
+            password="adminpass123",
+            first_name="Profile",
+            last_name="Admin",
+        )
+        HospitalAdminProfile.objects.create(
+            user=admin_user,
+            hospital=self.city_hospital,
+            admin_id="ADM-201",
+        )
+        admin_token = Token.objects.create(user=admin_user)
+
+        response = self.client.get(
+            "/api/admin/profile",
+            format="json",
+            **self.auth_headers(admin_token),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["name"], "Profile Admin")
+        self.assertEqual(response.data["admin_id"], "ADM-201")
+        self.assertEqual(response.data["hospital_id"], self.city_hospital.id)
+
+    def test_admin_profile_update_changes_only_own_profile(self):
+        admin_user = User.objects.create_user(
+            username="update.admin@example.com",
+            email="update.admin@example.com",
+            password="adminpass123",
+            first_name="Old",
+            last_name="Name",
+        )
+        profile = HospitalAdminProfile.objects.create(
+            user=admin_user,
+            hospital=self.city_hospital,
+            admin_id="ADM-301",
+        )
+        admin_token = Token.objects.create(user=admin_user)
+
+        response = self.client.put(
+            "/api/admin/profile",
+            {
+                "name": "New Admin",
+                "admin_id": "ADM-999",
+                "hospital": self.remote_hospital.id,
+            },
+            format="json",
+            **self.auth_headers(admin_token),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        profile.refresh_from_db()
+        admin_user.refresh_from_db()
+        self.assertEqual(profile.admin_id, "ADM-999")
+        self.assertEqual(profile.hospital, self.remote_hospital)
+        self.assertEqual(admin_user.get_full_name(), "New Admin")

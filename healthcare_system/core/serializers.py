@@ -52,6 +52,11 @@ class LoginSerializer(serializers.Serializer):
         maybe_seed_demo_access_profiles(email, role=role)
 
         if role == "patient":
+            raw_phone = str(attrs.get("phone", ""))
+            phone_digits = "".join(char for char in raw_phone if char.isdigit())
+            if raw_phone.strip() and len(phone_digits) != 10:
+                raise serializers.ValidationError({"phone": "Mobile number must be exactly 10 digits."})
+            attrs["phone"] = phone_digits
             attrs["user"] = self._resolve_patient_user(
                 email=email,
                 password=password,
@@ -102,6 +107,9 @@ class LoginSerializer(serializers.Serializer):
             self._sync_patient_user(user, email, full_name)
             self._sync_patient_profile(user, full_name, city, phone, emergency_contact)
             return user
+
+        if len(phone) != 10:
+            raise serializers.ValidationError({"phone": "Mobile number must be exactly 10 digits."})
 
         resolved_name = full_name.strip() or self._name_from_email(email)
         first_name, _, last_name = resolved_name.partition(" ")
@@ -158,7 +166,7 @@ class LoginSerializer(serializers.Serializer):
             defaults={
                 "full_name": resolved_name,
                 "city": city or "Delhi",
-                "phone": phone or "9999999999",
+                "phone": phone or getattr(getattr(user, "patient_profile", None), "phone", "") or "9999999999",
                 "emergency_contact": emergency_contact or "Demo Emergency Contact",
             },
         )
@@ -301,6 +309,7 @@ class BookingCreateSerializer(serializers.Serializer):
                 ai_summary=validated_data.get("ai_summary", ""),
                 recommended_specializations=validated_data.get("recommended_specializations", []),
                 next_steps=validated_data.get("next_steps", ""),
+                status="pending",
             )
 
             availability.is_booked = True
@@ -351,8 +360,10 @@ class AdminHospitalSerializer(serializers.ModelSerializer):
 
 
 class BookingRecordSerializer(serializers.ModelSerializer):
+    patient_full_name = serializers.SerializerMethodField()
     hospital_name = serializers.CharField(source="hospital.name", read_only=True)
     doctor_name = serializers.CharField(source="doctor.name", read_only=True)
+    appointment_date = serializers.SerializerMethodField()
     transfer_count = serializers.SerializerMethodField()
 
     class Meta:
@@ -360,6 +371,8 @@ class BookingRecordSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "patient_name",
+            "patient_full_name",
+            "phone",
             "hospital_name",
             "doctor_name",
             "urgency",
@@ -369,9 +382,18 @@ class BookingRecordSerializer(serializers.ModelSerializer):
             "recommended_specializations",
             "next_steps",
             "token_number",
+            "appointment_date",
             "created_at",
             "transfer_count",
         ]
+
+    def get_patient_full_name(self, obj):
+        return getattr(obj.patient, "full_name", "") or obj.patient_name
+
+    def get_appointment_date(self, obj):
+        if obj.availability_id and obj.availability:
+            return obj.availability.date
+        return obj.created_at.date()
 
     def get_transfer_count(self, obj):
         return obj.transfers.count()
@@ -381,6 +403,79 @@ class PatientRecordUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Booking
         fields = ["status", "ai_summary", "next_steps"]
+
+
+class PatientAppointmentStatusSerializer(serializers.ModelSerializer):
+    status = serializers.ChoiceField(choices=[("cancelled", "Cancelled")])
+
+    class Meta:
+        model = Booking
+        fields = ["status"]
+
+
+class AdminAppointmentStatusSerializer(serializers.ModelSerializer):
+    status = serializers.ChoiceField(choices=[("accepted", "Accepted"), ("rejected", "Rejected")])
+
+    class Meta:
+        model = Booking
+        fields = ["status"]
+
+
+class PatientDirectorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PatientProfile
+        fields = ["id", "full_name", "phone", "city"]
+
+
+class AdminPatientRecordCreateSerializer(serializers.Serializer):
+    patient_id = serializers.IntegerField()
+    symptoms = serializers.CharField(required=False, allow_blank=True, default="")
+    ai_summary = serializers.CharField(required=False, allow_blank=True, default="")
+    next_steps = serializers.CharField(required=False, allow_blank=True, default="")
+    urgency = serializers.ChoiceField(
+        choices=Booking.URGENCY_CHOICES,
+        required=False,
+        default="normal",
+    )
+    status = serializers.ChoiceField(
+        choices=Booking.STATUS_CHOICES,
+        required=False,
+        default="under_review",
+    )
+
+    def validate(self, attrs):
+        patient = PatientProfile.objects.filter(id=attrs["patient_id"]).first()
+        if not patient:
+            raise serializers.ValidationError({"patient_id": "Patient not found."})
+
+        hospital = self.context["hospital"]
+        can_access_all_patients = self.context.get("can_access_all_patients", False)
+        if not can_access_all_patients and not Booking.objects.filter(
+            patient=patient,
+            hospital=hospital,
+        ).exists():
+            raise serializers.ValidationError(
+                {"patient_id": "Select a patient who already has an appointment with your hospital."}
+            )
+
+        attrs["patient"] = patient
+        return attrs
+
+    def create(self, validated_data):
+        patient = validated_data["patient"]
+        hospital = self.context["hospital"]
+        return Booking.objects.create(
+            patient=patient,
+            hospital=hospital,
+            patient_name=patient.full_name,
+            phone=patient.phone or "9999999999",
+            symptoms=validated_data.get("symptoms", ""),
+            ai_summary=validated_data.get("ai_summary", ""),
+            next_steps=validated_data.get("next_steps", ""),
+            urgency=validated_data.get("urgency", "normal"),
+            status=validated_data.get("status", "under_review"),
+            recommended_specializations=[],
+        )
 
 
 class SosAlertSerializer(serializers.ModelSerializer):
@@ -501,7 +596,50 @@ class TransferSerializer(serializers.ModelSerializer):
 
 class HospitalAdminProfileSerializer(serializers.ModelSerializer):
     hospital = AdminHospitalSerializer(read_only=True)
+    hospital_id = serializers.IntegerField(source="hospital.id", read_only=True)
+    hospital_name = serializers.CharField(source="hospital.name", read_only=True)
+    name = serializers.SerializerMethodField()
 
     class Meta:
         model = HospitalAdminProfile
-        fields = ["title", "hospital"]
+        fields = ["name", "admin_id", "title", "hospital", "hospital_id", "hospital_name"]
+
+    def get_name(self, obj):
+        return obj.user.get_full_name() or obj.user.username
+
+
+class HospitalAdminProfileUpdateSerializer(serializers.ModelSerializer):
+    name = serializers.CharField(max_length=200)
+    hospital = serializers.PrimaryKeyRelatedField(queryset=Hospital.objects.all())
+
+    class Meta:
+        model = HospitalAdminProfile
+        fields = ["name", "admin_id", "hospital"]
+
+    def validate_admin_id(self, value):
+        cleaned = str(value or "").strip()
+        if not cleaned:
+            raise serializers.ValidationError("Admin ID is required.")
+
+        existing = HospitalAdminProfile.objects.exclude(id=self.instance.id).filter(admin_id__iexact=cleaned)
+        if existing.exists():
+            raise serializers.ValidationError("This admin ID is already in use.")
+        return cleaned
+
+    def update(self, instance, validated_data):
+        resolved_name = validated_data.pop("name", "").strip()
+        hospital = validated_data.pop("hospital", None)
+
+        if resolved_name:
+            first_name, _, last_name = resolved_name.partition(" ")
+            user = instance.user
+            user.first_name = first_name
+            user.last_name = last_name
+            user.save(update_fields=["first_name", "last_name"])
+
+        if hospital is not None:
+            instance.hospital = hospital
+
+        instance.admin_id = validated_data.get("admin_id", instance.admin_id)
+        instance.save(update_fields=["hospital", "admin_id"] if hospital is not None else ["admin_id"])
+        return instance

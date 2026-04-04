@@ -11,6 +11,9 @@ import {
   persistAdminTransfer,
   persistPatientAlert,
   persistPatientBooking,
+  persistSession,
+  removePatientBooking,
+  updatePatientBooking,
 } from "../utils/storage";
 
 
@@ -127,6 +130,7 @@ function shouldUseAdminDemoFallback(error) {
 function buildFallbackAdminOverview() {
   const session = getSession();
   const localTransfers = getLocalAdminTransfers();
+  const localHistory = getPatientBookings();
   const managedHospital = {
     id: session?.profile?.hospital?.id || 1,
     name: session?.profile?.hospital?.name || "Demo Hospital",
@@ -142,6 +146,8 @@ function buildFallbackAdminOverview() {
 
   return {
     profile: {
+      name: session?.display_name || "Admin 1",
+      admin_id: "ADM-DEMO",
       title: session?.profile?.title || "Hospital Operations Admin",
       hospital: session?.profile?.hospital || {
         id: managedHospital.id,
@@ -163,12 +169,20 @@ function buildFallbackAdminOverview() {
       opd_load: 4,
     })),
     analytics: {
-      active_records: 0,
+      active_records: localHistory.length,
+      appointments: localHistory.length,
       active_sos_alerts: 0,
       outbound_transfers: localTransfers.length,
       inbound_transfers: 0,
     },
-    patient_records: [],
+    appointments: localHistory,
+    patient_records: localHistory,
+    patient_options: localHistory.map((item) => ({
+      id: item.id,
+      full_name: item.patient_name,
+      phone: "",
+      city: "",
+    })),
     alerts: [],
     transfers: {
       outbound: localTransfers,
@@ -239,8 +253,9 @@ export async function bookAppointment(payload) {
       hospital_name: data.hospital_name,
       doctor_name: data.doctor_name,
       urgency: payload.urgency,
-      status: "scheduled",
+      status: data.booking_status || "pending",
       ai_summary: payload.ai_summary,
+      symptoms: payload.symptoms,
       next_steps: payload.next_steps,
     });
     return data;
@@ -256,8 +271,9 @@ export async function bookAppointment(payload) {
       hospital_name: payload.hospital_name || "Demo hospital",
       doctor_name: payload.doctor_name || "Demo doctor",
       urgency: payload.urgency,
-      status: "scheduled",
+      status: "pending",
       ai_summary: payload.ai_summary,
+      symptoms: payload.symptoms,
       next_steps: payload.next_steps,
     });
 
@@ -310,6 +326,40 @@ export async function createPatientSosAlert(payload) {
 }
 
 
+export async function cancelPatientAppointment(bookingId) {
+  try {
+    const { data } = await api.patch(
+      `patient/appointments/${bookingId}/status`,
+      { status: "cancelled" },
+      authConfig(),
+    );
+    updatePatientBooking(bookingId, data);
+    return data;
+  } catch (error) {
+    if (!shouldUsePatientDemoFallback(error)) {
+      throw error;
+    }
+    updatePatientBooking(bookingId, { status: "cancelled" });
+    return { id: bookingId, status: "cancelled" };
+  }
+}
+
+
+export async function deletePatientRecord(bookingId) {
+  try {
+    await api.delete(`patient/records/${bookingId}`, authConfig());
+    removePatientBooking(bookingId);
+    return { id: bookingId };
+  } catch (error) {
+    if (!shouldUsePatientDemoFallback(error)) {
+      throw error;
+    }
+    removePatientBooking(bookingId);
+    return { id: bookingId };
+  }
+}
+
+
 export async function getAdminOverview() {
   try {
     const { data } = await api.get("admin/overview", authConfig());
@@ -319,6 +369,73 @@ export async function getAdminOverview() {
       throw error;
     }
     return buildFallbackAdminOverview();
+  }
+}
+
+
+export async function getAdminProfile() {
+  try {
+    const { data } = await api.get("admin/profile", authConfig());
+    return data;
+  } catch (error) {
+    if (!shouldUseAdminDemoFallback(error)) {
+      throw error;
+    }
+
+    const session = getSession();
+    return {
+      name: session?.display_name || "Admin 1",
+      admin_id: "ADM-DEMO",
+      title: session?.profile?.title || "Hospital Operations Admin",
+      hospital: session?.profile?.hospital || { id: 1, name: "Demo Hospital", location: "Delhi" },
+      hospital_id: session?.profile?.hospital?.id || 1,
+      hospital_name: session?.profile?.hospital?.name || "Demo Hospital",
+    };
+  }
+}
+
+
+export async function updateAdminProfile(payload) {
+  try {
+    const { data } = await api.put("admin/profile", payload, authConfig());
+    const session = getSession();
+    if (session) {
+      persistSession({
+        ...session,
+        display_name: data.name || session.display_name,
+        profile: {
+          ...session.profile,
+          hospital: data.hospital || session.profile?.hospital,
+        },
+      });
+    }
+    return data;
+  } catch (error) {
+    if (!shouldUseAdminDemoFallback(error)) {
+      throw error;
+    }
+
+    const session = getSession();
+    if (session) {
+      persistSession({
+        ...session,
+        display_name: payload.name || session.display_name,
+        profile: {
+          ...session.profile,
+          hospital: {
+            ...(session.profile?.hospital || {}),
+            id: Number(payload.hospital) || session.profile?.hospital?.id || 1,
+            name: session.profile?.hospital?.name || "Demo Hospital",
+            location: session.profile?.hospital?.location || "Delhi",
+          },
+        },
+      });
+    }
+    return {
+      name: payload.name,
+      admin_id: payload.admin_id,
+      hospital_id: Number(payload.hospital) || 1,
+    };
   }
 }
 
@@ -346,6 +463,22 @@ export async function updatePatientRecord(recordId, payload) {
     }
     return { id: recordId, ...payload };
   }
+}
+
+
+export async function createPatientRecord(payload) {
+  const { data } = await api.post("admin/patient-records", payload, authConfig());
+  return data;
+}
+
+
+export async function updateAppointmentStatus(bookingId, statusValue) {
+  const { data } = await api.patch(
+    `admin/appointments/${bookingId}/status`,
+    { status: statusValue },
+    authConfig(),
+  );
+  return data;
 }
 
 

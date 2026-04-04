@@ -182,6 +182,68 @@ FALLBACK_DEMO_ADMIN_HOSPITALS = [
 DEMO_ADMIN_EMAIL_PATTERN = re.compile(r"^admin\d+@medpulse\.local$")
 
 
+def build_admin_identifier(user, hospital=None):
+    if hospital:
+        hospital_slug = re.sub(r"[^a-z0-9]+", "", hospital.name.lower())[:8] or "hospital"
+    else:
+        hospital_slug = "admin"
+
+    base = re.sub(r"[^a-z0-9]+", "", (user.username or user.email or "admin").lower())[:12] or "admin"
+    return f"{hospital_slug}-{base}"
+
+
+def generate_unique_admin_identifier(user, hospital=None, exclude_profile_id=None):
+    base_identifier = build_admin_identifier(user, hospital=hospital)
+    candidate = base_identifier
+    suffix = 1
+
+    while HospitalAdminProfile.objects.exclude(id=exclude_profile_id).filter(admin_id=candidate).exists():
+        candidate = f"{base_identifier[:50]}-{suffix}"
+        suffix += 1
+
+    return candidate
+
+
+def ensure_admin_profile(user):
+    if hasattr(user, "hospital_admin_profile"):
+        profile = user.hospital_admin_profile
+        updates = []
+        if not profile.admin_id:
+            profile.admin_id = generate_unique_admin_identifier(
+                user,
+                hospital=profile.hospital,
+                exclude_profile_id=profile.id,
+            )
+            updates.append("admin_id")
+        if updates:
+            profile.save(update_fields=updates)
+        return profile
+
+    if not getattr(user, "is_superuser", False):
+        return None
+
+    hospital = Hospital.objects.order_by("name").first()
+    if not hospital:
+        return None
+
+    profile, created = HospitalAdminProfile.objects.get_or_create(
+        user=user,
+        defaults={
+            "hospital": hospital,
+            "title": "Platform Superuser",
+            "admin_id": generate_unique_admin_identifier(user, hospital=hospital),
+        },
+    )
+    if not created and not profile.admin_id:
+        profile.admin_id = generate_unique_admin_identifier(
+            user,
+            hospital=profile.hospital,
+            exclude_profile_id=profile.id,
+        )
+        profile.save(update_fields=["admin_id"])
+    return profile
+
+
 def split_name(full_name):
     cleaned = (full_name or "").strip()
     if not cleaned:
@@ -199,8 +261,8 @@ def role_for_user(user):
 
 
 def get_admin_access_scope(user, hospital_id=None):
-    if hasattr(user, "hospital_admin_profile"):
-        profile = user.hospital_admin_profile
+    profile = ensure_admin_profile(user)
+    if profile and not getattr(user, "is_superuser", False):
         return {
             "is_superuser": False,
             "title": profile.title,
@@ -210,12 +272,16 @@ def get_admin_access_scope(user, hospital_id=None):
 
     if getattr(user, "is_superuser", False):
         hospitals = Hospital.objects.order_by("name")
-        hospital = hospitals.filter(id=hospital_id).first() if hospital_id is not None else hospitals.first()
+        hospital = profile.hospital if profile else None
+        if hospital_id is not None:
+            hospital = hospitals.filter(id=hospital_id).first()
+        elif hospital is None:
+            hospital = hospitals.first()
         return {
             "is_superuser": True,
-            "title": "Platform Superuser",
+            "title": profile.title if profile else "Platform Superuser",
             "hospital": hospital,
-            "profile": None,
+            "profile": profile,
         }
 
     return None
@@ -242,6 +308,8 @@ def serialize_access_session(user, token_key):
         profile = get_admin_access_scope(user)
         hospital = profile["hospital"] if profile else None
         payload["profile"] = {
+            "name": user.get_full_name() or user.username,
+            "admin_id": profile["profile"].admin_id if profile and profile["profile"] else "",
             "title": profile["title"] if profile else "Hospital Admin",
             "hospital": (
                 {
@@ -377,6 +445,7 @@ def ensure_demo_access_profiles():
             user=admin_user,
             defaults={
                 "hospital": hospital,
+                "admin_id": f"ADM-{index:03d}",
                 "title": "Hospital Operations Admin",
             },
         )

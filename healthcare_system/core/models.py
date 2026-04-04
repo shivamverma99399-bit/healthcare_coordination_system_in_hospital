@@ -53,6 +53,7 @@ class HospitalAdminProfile(models.Model):
         on_delete=models.CASCADE,
         related_name="admin_profiles",
     )
+    admin_id = models.CharField(max_length=60, unique=True, null=True, blank=True)
     title = models.CharField(max_length=120, default="Hospital Operations Admin")
 
     def __str__(self):
@@ -96,7 +97,7 @@ class Availability(models.Model):
 
 
 class Booking(models.Model):
-    ACTIVE_QUEUE_STATUSES = {"scheduled", "under_review"}
+    ACTIVE_QUEUE_STATUSES = {"pending", "accepted", "scheduled", "under_review"}
 
     URGENCY_CHOICES = [
         ("normal", "Normal"),
@@ -105,6 +106,10 @@ class Booking(models.Model):
     ]
 
     STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("accepted", "Accepted"),
+        ("rejected", "Rejected"),
+        ("cancelled", "Cancelled"),
         ("scheduled", "Scheduled"),
         ("under_review", "Under Review"),
         ("transferred", "Transferred"),
@@ -145,7 +150,7 @@ class Booking(models.Model):
     token_number = models.IntegerField(blank=True, null=True)
     expected_time = models.TimeField(blank=True, null=True)
     urgency = models.CharField(max_length=10, choices=URGENCY_CHOICES)
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="scheduled")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
     next_steps = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -183,11 +188,15 @@ class Booking(models.Model):
             super().save(*args, **kwargs)
 
             if track_queue and (is_new or previous_status != self.status):
-                active_count = Booking.objects.filter(
-                    hospital_id=self.hospital_id,
-                    status__in=self.ACTIVE_QUEUE_STATUSES,
-                ).count()
-                Hospital.objects.filter(pk=self.hospital_id).update(opd_load=active_count)
+                self.update_hospital_queue(self.hospital_id)
+
+    @classmethod
+    def update_hospital_queue(cls, hospital_id):
+        active_count = cls.objects.filter(
+            hospital_id=hospital_id,
+            status__in=cls.ACTIVE_QUEUE_STATUSES,
+        ).count()
+        Hospital.objects.filter(pk=hospital_id).update(opd_load=active_count)
 
 
 class SosAlert(models.Model):

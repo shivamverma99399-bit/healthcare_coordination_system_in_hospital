@@ -1,7 +1,10 @@
 from django.urls import path
 from .views import (
+    AdminAppointmentStatusUpdateView,
     AdminHospitalUpdateView,
     AdminOverviewView,
+    AdminProfileView,
+    AdminPatientRecordListCreateView,
     AdminPatientRecordUpdateView,
     AdminTransferView,
     AnalyzeSymptomsView,
@@ -12,7 +15,9 @@ from .views import (
     HospitalRecommendationsView,
     LoginView,
     LogoutView,
+    PatientAppointmentStatusView,
     PatientDashboardView,
+    PatientRecordDeleteView,
     PatientSosAlertView,
     SessionView,
 )
@@ -36,8 +41,29 @@ urlpatterns = [
     ),
     path("book-appointment", BookAppointmentView.as_view(), name="book-appointment"),
     path("patient/dashboard", PatientDashboardView.as_view(), name="patient-dashboard"),
+    path(
+        "patient/appointments/<int:booking_id>/status",
+        PatientAppointmentStatusView.as_view(),
+        name="patient-appointment-status",
+    ),
+    path(
+        "patient/records/<int:booking_id>",
+        PatientRecordDeleteView.as_view(),
+        name="patient-record-delete",
+    ),
     path("patient/sos-alerts", PatientSosAlertView.as_view(), name="patient-sos-alerts"),
     path("admin/overview", AdminOverviewView.as_view(), name="admin-overview"),
+    path("admin/profile", AdminProfileView.as_view(), name="admin-profile"),
+    path(
+        "admin/appointments/<int:booking_id>/status",
+        AdminAppointmentStatusUpdateView.as_view(),
+        name="admin-appointment-status-update",
+    ),
+    path(
+        "admin/patient-records",
+        AdminPatientRecordListCreateView.as_view(),
+        name="admin-patient-record-create",
+    ),
     path(
         "admin/hospitals/<int:hospital_id>",
         AdminHospitalUpdateView.as_view(),

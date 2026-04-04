@@ -88,18 +88,11 @@ export default function HomePage({ session, patientMode = false }) {
       <div className="section-shell pb-16 pt-10 sm:pb-20 sm:pt-14">
         <section className="grid items-center gap-10 lg:grid-cols-[1.1fr_0.9fr]">
           <div>
-            <p className="chip border-blue-200 bg-blue-50 text-blue-700">
-              Rebuilt around the workflow and architecture diagrams
-            </p>
+            
             <h1 className="mt-6 max-w-3xl font-display text-5xl font-bold tracking-tight text-slate-900 sm:text-6xl">
               Patient care routing and hospital coordination in one platform.
             </h1>
-            <p className="mt-6 max-w-2xl text-base leading-8 text-slate-600">
-              The platform now separates patient and hospital-admin journeys. Patients move from
-              login to symptom intake, AI recommendations, hospital comparison, booking, SOS, and
-              dashboard tracking. Hospital admins manage resources, records, analytics, and
-              inter-hospital collaboration.
-            </p>
+            
             <div className="mt-8 flex flex-wrap gap-4">
               <button type="button" className="primary-button" onClick={() => navigate("/login/patient")}>
                 Patient Login
@@ -144,29 +137,7 @@ export default function HomePage({ session, patientMode = false }) {
           </div>
         </section>
 
-        <section className="mt-10 grid gap-6 xl:grid-cols-2">
-          <div className="glass-panel p-6">
-            <h2 className="font-display text-3xl font-bold tracking-tight">Platform Highlights</h2>
-            <div className="mt-5 grid gap-4 sm:grid-cols-2">
-              <FlowCard
-                title="Patient Experience"
-                items={[
-                  "Fast login and guided symptom intake",
-                  "AI-based hospital comparison with beds, ICU, and specialists",
-                  "Appointment booking, SOS, and dashboard tracking",
-                ]}
-              />
-              <FlowCard
-                title="Hospital Operations"
-                items={[
-                  "Live resource updates for beds, ICU, and emergency readiness",
-                  "Patient record management and transfer workflows",
-                  "Shared view across connected hospitals",
-                ]}
-              />
-            </div>
-          </div>
-        </section>
+        
       </div>
     );
   }

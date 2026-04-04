@@ -18,7 +18,7 @@ export default function PatientLoginPage({ session, onSessionChange }) {
     phone: "",
     emergency_contact: "",
   });
-  const [status, setStatus] = useState({ loading: false, error: "" });
+  const [status, setStatus] = useState({ loading: false, error: "", fieldErrors: {} });
 
   useEffect(() => {
     if (session?.role === "patient") {
@@ -34,11 +34,40 @@ export default function PatientLoginPage({ session, onSessionChange }) {
   function handleChange(event) {
     const { name, value } = event.target;
     setForm((current) => ({ ...current, [name]: value }));
+    setStatus((current) => ({
+      ...current,
+      error: "",
+      fieldErrors: {
+        ...current.fieldErrors,
+        [name]: "",
+      },
+    }));
+  }
+
+  function validateForm() {
+    const fieldErrors = {};
+    const normalizedEmail = form.email.trim();
+    const phoneDigits = form.phone.replace(/\D/g, "");
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      fieldErrors.email = "Enter a valid email address.";
+    }
+    if (phoneDigits.length !== 10) {
+      fieldErrors.phone = "Mobile number must be exactly 10 digits.";
+    }
+
+    return fieldErrors;
   }
 
   async function handleSubmit(event) {
     event.preventDefault();
-    setStatus({ loading: true, error: "" });
+    const fieldErrors = validateForm();
+    if (Object.keys(fieldErrors).length) {
+      setStatus({ loading: false, error: "", fieldErrors });
+      return;
+    }
+
+    setStatus({ loading: true, error: "", fieldErrors: {} });
 
     try {
       const sessionData = await loginPortal({
@@ -48,11 +77,21 @@ export default function PatientLoginPage({ session, onSessionChange }) {
       persistSession(sessionData);
       onSessionChange(sessionData);
       navigate("/patient/intake");
-    } catch {
-      const sessionData = buildLocalDemoSession(form);
-      persistSession(sessionData);
-      onSessionChange(sessionData);
-      navigate("/patient/intake");
+    } catch (error) {
+      const normalizedEmail = form.email.trim().toLowerCase();
+      if (demoAccount && normalizedEmail === demoAccount.email) {
+        const sessionData = buildLocalDemoSession(form);
+        persistSession(sessionData);
+        onSessionChange(sessionData);
+        navigate("/patient/intake");
+        return;
+      }
+
+      setStatus({
+        loading: false,
+        error: error?.response?.data?.detail || "Patient login failed.",
+        fieldErrors: error?.response?.data || {},
+      });
     }
   }
 
@@ -97,7 +136,7 @@ export default function PatientLoginPage({ session, onSessionChange }) {
       return;
     }
 
-    setStatus({ loading: true, error: "" });
+    setStatus({ loading: true, error: "", fieldErrors: {} });
 
     try {
       const sessionData = await loginPortal({
@@ -195,6 +234,9 @@ export default function PatientLoginPage({ session, onSessionChange }) {
                   Suggestion: use demo email `{suggestedPatientEmail}`
                 </button>
               ) : null}
+              {status.fieldErrors.email ? (
+                <p className="mt-2 text-sm text-red-600">{status.fieldErrors.email}</p>
+              ) : null}
             </div>
             <div className="sm:col-span-2">
               <label className="mb-2 block text-sm font-medium text-slate-600">Password</label>
@@ -229,6 +271,9 @@ export default function PatientLoginPage({ session, onSessionChange }) {
             <div>
               <label className="mb-2 block text-sm font-medium text-slate-600">Phone</label>
               <input className="field" name="phone" value={form.phone} onChange={handleChange} />
+              {status.fieldErrors.phone ? (
+                <p className="mt-2 text-sm text-red-600">{status.fieldErrors.phone}</p>
+              ) : null}
             </div>
             <div className="sm:col-span-2">
               <label className="mb-2 block text-sm font-medium text-slate-600">Emergency contact</label>

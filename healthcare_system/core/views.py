@@ -8,10 +8,13 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Booking, Doctor, Hospital, InterHospitalTransfer, SosAlert
+from .models import Booking, Doctor, Hospital, InterHospitalTransfer, PatientProfile, SosAlert
 from .permissions import IsHospitalAdmin, IsPatientUser
 from .serializers import (
     AdminHospitalSerializer,
+    AdminAppointmentStatusSerializer,
+    HospitalAdminProfileUpdateSerializer,
+    AdminPatientRecordCreateSerializer,
     AnalyzeSymptomsSerializer,
     BookingCreateSerializer,
     BookingRecordSerializer,
@@ -19,6 +22,8 @@ from .serializers import (
     HospitalRecommendationSerializer,
     HospitalAdminProfileSerializer,
     LoginSerializer,
+    PatientAppointmentStatusSerializer,
+    PatientDirectorySerializer,
     PatientRecordUpdateSerializer,
     SosAlertCreateSerializer,
     SosAlertSerializer,
@@ -189,6 +194,7 @@ class BookAppointmentView(APIView):
         return Response(
             {
                 "status": "confirmed",
+                "booking_status": booking.status,
                 "booking_id": booking.id,
                 "doctor_name": booking.doctor.name if booking.doctor else "",
                 "hospital_name": booking.hospital.name,
@@ -209,7 +215,7 @@ class PatientDashboardView(APIView):
         patient_profile = request.user.patient_profile
         bookings = (
             Booking.objects.filter(patient=patient_profile)
-            .select_related("hospital", "doctor")
+            .select_related("hospital", "doctor", "availability")
             .prefetch_related("transfers")
         )
         alerts_queryset = SosAlert.objects.filter(patient=patient_profile).select_related("hospital")
@@ -250,6 +256,60 @@ class PatientSosAlertView(APIView):
         return Response(SosAlertSerializer(alert).data, status=status.HTTP_201_CREATED)
 
 
+class PatientAppointmentStatusView(APIView):
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated, IsPatientUser]
+
+    def patch(self, request, booking_id):
+        booking = self._get_owned_booking(request.user, booking_id)
+        if not booking:
+            return Response({"detail": "Appointment not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = PatientAppointmentStatusSerializer(booking, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        booking = serializer.save()
+        self._release_slot_if_needed(booking)
+        return Response(BookingRecordSerializer(booking).data, status=status.HTTP_200_OK)
+
+    def _get_owned_booking(self, user, booking_id):
+        return (
+            Booking.objects.filter(id=booking_id, patient=user.patient_profile)
+            .select_related("availability", "hospital", "doctor", "patient")
+            .first()
+        )
+
+    def _release_slot_if_needed(self, booking):
+        if booking.status != "cancelled" or not booking.availability_id:
+            return
+        availability = booking.availability
+        if availability.is_booked:
+            availability.is_booked = False
+            availability.save(update_fields=["is_booked"])
+
+
+class PatientRecordDeleteView(APIView):
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated, IsPatientUser]
+
+    def delete(self, request, booking_id):
+        booking = (
+            Booking.objects.filter(id=booking_id, patient=request.user.patient_profile)
+            .select_related("availability")
+            .first()
+        )
+        if not booking:
+            return Response({"detail": "Patient record not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        hospital_id = booking.hospital_id
+        availability = booking.availability
+        booking.delete()
+        if availability and availability.is_booked:
+            availability.is_booked = False
+            availability.save(update_fields=["is_booked"])
+        Booking.update_hospital_queue(hospital_id)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 class AdminOverviewView(APIView):
     authentication_classes = [TokenAuthentication]
     permission_classes = [IsAuthenticated, IsHospitalAdmin]
@@ -265,8 +325,14 @@ class AdminOverviewView(APIView):
 
         records = (
             Booking.objects.filter(hospital=managed_hospital)
-            .select_related("doctor", "hospital")
+            .select_related("doctor", "hospital", "patient", "availability")
             .prefetch_related("transfers")
+        )
+        appointments = records.exclude(availability__isnull=True)
+        patients = (
+            PatientProfile.objects.filter(bookings__hospital=managed_hospital)
+            .distinct()
+            .order_by("full_name")
         )
         alerts = (
             SosAlert.objects.filter(Q(hospital=managed_hospital) | Q(hospital__isnull=True))
@@ -299,17 +365,57 @@ class AdminOverviewView(APIView):
                 "network_hospitals": AdminHospitalSerializer(network_hospitals, many=True).data,
                 "analytics": {
                     "active_records": records.count(),
+                    "appointments": appointments.count(),
                     "active_sos_alerts": alerts.filter(status="active").count(),
                     "outbound_transfers": outbound.count(),
                     "inbound_transfers": inbound.count(),
                 },
+                "appointments": BookingRecordSerializer(appointments[:12], many=True).data,
                 "patient_records": BookingRecordSerializer(records[:12], many=True).data,
+                "patient_options": PatientDirectorySerializer(patients, many=True).data,
                 "alerts": SosAlertSerializer(alerts[:8], many=True).data,
                 "transfers": {
                     "outbound": TransferSerializer(outbound[:8], many=True).data,
                     "inbound": TransferSerializer(inbound[:8], many=True).data,
                 },
             },
+            status=status.HTTP_200_OK,
+        )
+
+
+class AdminProfileView(APIView):
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated, IsHospitalAdmin]
+
+    def get(self, request):
+        admin_scope = get_admin_access_scope(request.user)
+        if not admin_scope or not admin_scope["profile"]:
+            return Response(
+                {"detail": "Admin profile is not configured."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response(
+            HospitalAdminProfileSerializer(admin_scope["profile"]).data,
+            status=status.HTTP_200_OK,
+        )
+
+    def put(self, request):
+        admin_scope = get_admin_access_scope(request.user)
+        if not admin_scope or not admin_scope["profile"]:
+            return Response(
+                {"detail": "Admin profile is not configured."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        serializer = HospitalAdminProfileUpdateSerializer(
+            admin_scope["profile"],
+            data=request.data,
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        admin_scope["profile"].refresh_from_db()
+        return Response(
+            HospitalAdminProfileSerializer(admin_scope["profile"]).data,
             status=status.HTTP_200_OK,
         )
 
@@ -364,6 +470,61 @@ class AdminPatientRecordUpdateView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         booking.refresh_from_db()
+        return Response(BookingRecordSerializer(booking).data, status=status.HTTP_200_OK)
+
+
+class AdminPatientRecordListCreateView(APIView):
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated, IsHospitalAdmin]
+
+    def post(self, request):
+        admin_scope = get_admin_access_scope(request.user)
+        managed_hospital = admin_scope["hospital"] if admin_scope else None
+        if not managed_hospital:
+            return Response(
+                {"detail": "No hospital is configured for this admin account."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        serializer = AdminPatientRecordCreateSerializer(
+            data=request.data,
+            context={
+                "hospital": managed_hospital,
+                "can_access_all_patients": bool(admin_scope and admin_scope["is_superuser"]),
+            },
+        )
+        serializer.is_valid(raise_exception=True)
+        booking = serializer.save()
+        return Response(BookingRecordSerializer(booking).data, status=status.HTTP_201_CREATED)
+
+
+class AdminAppointmentStatusUpdateView(APIView):
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated, IsHospitalAdmin]
+
+    def patch(self, request, booking_id):
+        admin_scope = get_admin_access_scope(request.user)
+        booking = (
+            Booking.objects.filter(id=booking_id)
+            .select_related("hospital", "availability", "doctor", "patient")
+            .first()
+        )
+        if not booking:
+            return Response({"detail": "Appointment not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not admin_scope or booking.hospital_id != admin_scope["hospital"].id:
+            return Response(
+                {"detail": "You can only update appointments for your assigned hospital."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = AdminAppointmentStatusSerializer(booking, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        booking = serializer.save()
+        if booking.status == "rejected" and booking.availability_id:
+            availability = booking.availability
+            if availability.is_booked:
+                availability.is_booked = False
+                availability.save(update_fields=["is_booked"])
         return Response(BookingRecordSerializer(booking).data, status=status.HTTP_200_OK)
 
 

@@ -59,7 +59,7 @@ export default function AdminLoginPage({ session, onSessionChange }) {
         demoAccounts.find((account) => account.email === normalizedEmail) ||
         fallbackAdminAccounts.find((account) => account.email === normalizedEmail);
 
-      if (matchedDemo && form.password) {
+      if (matchedDemo && form.password === matchedDemo.password) {
         const sessionData = buildLocalAdminSession(matchedDemo, form);
         persistSession(sessionData);
         onSessionChange(sessionData);
@@ -88,6 +88,8 @@ export default function AdminLoginPage({ session, onSessionChange }) {
       email,
       display_name: "Admin 1",
       profile: {
+        name: "Admin 1",
+        admin_id: "ADM-DEMO",
         title: "Hospital Operations Admin",
         hospital: {
           id: 1,

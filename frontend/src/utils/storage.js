@@ -44,9 +44,11 @@ function serializeBooking(booking) {
     hospital_name: booking.hospital_name || "Hospital pending",
     doctor_name: booking.doctor_name || "Doctor pending",
     urgency: booking.urgency || "normal",
-    status: booking.status || "scheduled",
+    status: booking.status || "pending",
     ai_summary: booking.ai_summary || "",
+    symptoms: booking.symptoms || "",
     next_steps: booking.next_steps || "",
+    appointment_date: booking.appointment_date || booking.created_at || new Date().toISOString(),
     created_at: booking.created_at || new Date().toISOString(),
   };
 }
@@ -158,6 +160,24 @@ export function getPatientBookings() {
 export function persistPatientBooking(booking) {
   const existing = getPatientBookings();
   const next = [serializeBooking(booking), ...existing].slice(0, 12);
+  window.localStorage.setItem(PATIENT_BOOKINGS_KEY, JSON.stringify(next));
+  return next;
+}
+
+
+export function updatePatientBooking(bookingId, updates) {
+  const existing = getPatientBookings();
+  const next = existing.map((booking) => (
+    booking.id === bookingId ? serializeBooking({ ...booking, ...updates }) : booking
+  ));
+  window.localStorage.setItem(PATIENT_BOOKINGS_KEY, JSON.stringify(next));
+  return next;
+}
+
+
+export function removePatientBooking(bookingId) {
+  const existing = getPatientBookings();
+  const next = existing.filter((booking) => booking.id !== bookingId);
   window.localStorage.setItem(PATIENT_BOOKINGS_KEY, JSON.stringify(next));
   return next;
 }

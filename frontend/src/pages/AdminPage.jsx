@@ -3,8 +3,12 @@ import { useEffect, useMemo, useState } from "react";
 import EmptyState from "../components/EmptyState";
 import ErrorState from "../components/ErrorState";
 import {
+  createPatientRecord,
   createTransfer,
+  getAdminProfile,
   getAdminOverview,
+  updateAdminProfile,
+  updateAppointmentStatus,
   updateHospitalResources,
   updatePatientRecord,
 } from "../services/api";
@@ -38,17 +42,31 @@ export default function AdminPage({ session }) {
     managed_hospital: null,
     network_hospitals: [],
     analytics: {},
+    appointments: [],
     patient_records: [],
+    patient_options: [],
     alerts: [],
     transfers: { outbound: [], inbound: [] },
   });
   const [resourceDraft, setResourceDraft] = useState(null);
+  const [adminProfile, setAdminProfile] = useState(null);
+  const [profileForm, setProfileForm] = useState({ name: "", admin_id: "", hospital: "" });
   const [recordDrafts, setRecordDrafts] = useState({});
   const [recordUploads, setRecordUploads] = useState(() => getAdminRecordUploads());
   const [pendingRecordFiles, setPendingRecordFiles] = useState({});
   const [recordUploadStatus, setRecordUploadStatus] = useState({});
   const [pageState, setPageState] = useState({ loading: true, error: "" });
   const [actionState, setActionState] = useState({ error: "", message: "" });
+  const [appointmentActionId, setAppointmentActionId] = useState(null);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [newRecordForm, setNewRecordForm] = useState({
+    patient_id: "",
+    urgency: "normal",
+    status: "under_review",
+    symptoms: "",
+    ai_summary: "",
+    next_steps: "",
+  });
   const [transferForm, setTransferForm] = useState({
     booking_id: "",
     target_hospital_id: "",
@@ -60,8 +78,14 @@ export default function AdminPage({ session }) {
     setPageState((current) => ({ ...current, loading: true, error: "" }));
 
     try {
-      const data = await getAdminOverview();
+      const [data, profile] = await Promise.all([getAdminOverview(), getAdminProfile()]);
       setOverview(data);
+      setAdminProfile(profile);
+      setProfileForm({
+        name: profile?.name || "",
+        admin_id: profile?.admin_id || "",
+        hospital: String(profile?.hospital_id || profile?.hospital?.id || data.managed_hospital?.id || ""),
+      });
       setResourceDraft(data.managed_hospital);
       setRecordDrafts(
         Object.fromEntries(
@@ -92,7 +116,14 @@ export default function AdminPage({ session }) {
     () => overview.patient_records || [],
     [overview.patient_records],
   );
+  const hospitalOptions = useMemo(() => {
+    const allHospitals = [overview.managed_hospital, ...(overview.network_hospitals || [])].filter(Boolean);
+    return allHospitals.filter(
+      (hospital, index, array) => array.findIndex((item) => item.id === hospital.id) === index,
+    );
+  }, [overview.managed_hospital, overview.network_hospitals]);
   const adminHospital = overview.profile?.hospital || session?.profile?.hospital || overview.managed_hospital;
+  const profileIncomplete = !adminProfile?.name || !adminProfile?.admin_id || !adminProfile?.hospital_id;
 
   function handleResourceChange(event) {
     const { name, value, type, checked } = event.target;
@@ -119,6 +150,35 @@ export default function AdminPage({ session }) {
         error: error?.response?.data?.detail || "Hospital resources could not be updated.",
         message: "",
       });
+    }
+  }
+
+  function handleProfileChange(event) {
+    const { name, value } = event.target;
+    setProfileForm((current) => ({ ...current, [name]: value }));
+  }
+
+  async function handleProfileSave(event) {
+    event.preventDefault();
+    setProfileSaving(true);
+    setActionState({ error: "", message: "" });
+
+    try {
+      const updated = await updateAdminProfile({
+        name: profileForm.name,
+        admin_id: profileForm.admin_id,
+        hospital: Number(profileForm.hospital),
+      });
+      setAdminProfile(updated);
+      setActionState({ error: "", message: "Admin profile saved." });
+      await loadOverview();
+    } catch (error) {
+      setActionState({
+        error: error?.response?.data?.detail || "Admin profile could not be updated.",
+        message: "",
+      });
+    } finally {
+      setProfileSaving(false);
     }
   }
 
@@ -185,6 +245,42 @@ export default function AdminPage({ session }) {
     setTransferForm((current) => ({ ...current, [name]: value }));
   }
 
+  function handleNewRecordChange(event) {
+    const { name, value } = event.target;
+    setNewRecordForm((current) => ({ ...current, [name]: value }));
+  }
+
+  async function handleNewRecordSubmit(event) {
+    event.preventDefault();
+    setActionState({ error: "", message: "" });
+
+    try {
+      await createPatientRecord({
+        patient_id: Number(newRecordForm.patient_id),
+        urgency: newRecordForm.urgency,
+        status: newRecordForm.status,
+        symptoms: newRecordForm.symptoms,
+        ai_summary: newRecordForm.ai_summary,
+        next_steps: newRecordForm.next_steps,
+      });
+      setNewRecordForm({
+        patient_id: "",
+        urgency: "normal",
+        status: "under_review",
+        symptoms: "",
+        ai_summary: "",
+        next_steps: "",
+      });
+      setActionState({ error: "", message: "Patient record created." });
+      await loadOverview();
+    } catch (error) {
+      setActionState({
+        error: error?.response?.data?.detail || "Patient record could not be created.",
+        message: "",
+      });
+    }
+  }
+
   async function handleTransferSubmit(event) {
     event.preventDefault();
     setActionState({ error: "", message: "" });
@@ -212,6 +308,27 @@ export default function AdminPage({ session }) {
     }
   }
 
+  async function handleAppointmentStatus(appointmentId, statusValue) {
+    setAppointmentActionId(appointmentId);
+    setActionState({ error: "", message: "" });
+
+    try {
+      await updateAppointmentStatus(appointmentId, statusValue);
+      setActionState({
+        error: "",
+        message: `Appointment ${statusValue}.`,
+      });
+      await loadOverview();
+    } catch (error) {
+      setActionState({
+        error: error?.response?.data?.detail || "Appointment status could not be updated.",
+        message: "",
+      });
+    } finally {
+      setAppointmentActionId(null);
+    }
+  }
+
   return (
     <div className="section-shell pb-16 pt-10">
       <div className="space-y-8">
@@ -235,11 +352,68 @@ export default function AdminPage({ session }) {
           ) : null}
         </div>
 
+        <section className="glass-panel p-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="font-display text-2xl font-bold tracking-tight">Admin Profile</h2>
+              <p className="mt-2 text-sm text-slate-500">
+                {profileIncomplete
+                  ? "Complete your admin profile to keep hospital mapping accurate."
+                  : "Profile details are stored in the backend and used for hospital-scoped access."}
+              </p>
+            </div>
+            {adminProfile ? (
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                <p><span className="font-semibold text-slate-800">Name:</span> {adminProfile.name || "Not set"}</p>
+                <p className="mt-1"><span className="font-semibold text-slate-800">Admin ID:</span> {adminProfile.admin_id || "Not set"}</p>
+                <p className="mt-1"><span className="font-semibold text-slate-800">Hospital:</span> {adminProfile.hospital_name || adminProfile.hospital?.name || "Not set"}</p>
+              </div>
+            ) : null}
+          </div>
+          <form onSubmit={handleProfileSave} className="mt-5 grid gap-4 md:grid-cols-3">
+            <input
+              className="field"
+              name="name"
+              value={profileForm.name}
+              onChange={handleProfileChange}
+              placeholder="Admin name"
+              required
+            />
+            <input
+              className="field"
+              name="admin_id"
+              value={profileForm.admin_id}
+              onChange={handleProfileChange}
+              placeholder="Admin ID"
+              required
+            />
+            <select
+              className="field"
+              name="hospital"
+              value={profileForm.hospital}
+              onChange={handleProfileChange}
+              required
+            >
+              <option value="">Select hospital</option>
+              {hospitalOptions.map((hospital) => (
+                <option key={hospital.id} value={hospital.id}>
+                  {hospital.name}
+                </option>
+              ))}
+            </select>
+            <div className="md:col-span-3">
+              <button type="submit" className="primary-button" disabled={profileSaving}>
+                {profileSaving ? "Saving profile..." : profileIncomplete ? "Complete profile" : "Update profile"}
+              </button>
+            </div>
+          </form>
+        </section>
+
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <AnalyticsTile label="Active records" value={overview.analytics.active_records ?? 0} />
+          <AnalyticsTile label="Appointments" value={overview.analytics.appointments ?? 0} />
           <AnalyticsTile label="Active SOS alerts" value={overview.analytics.active_sos_alerts ?? 0} />
           <AnalyticsTile label="Outbound transfers" value={overview.analytics.outbound_transfers ?? 0} />
-          <AnalyticsTile label="Inbound transfers" value={overview.analytics.inbound_transfers ?? 0} />
         </div>
 
         {actionState.message ? (
@@ -363,9 +537,9 @@ export default function AdminPage({ session }) {
                   <div key={record.id} className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div>
-                        <p className="font-semibold text-slate-900">{record.patient_name}</p>
+                        <p className="font-semibold text-slate-900">{record.patient_full_name || record.patient_name}</p>
                         <p className="mt-1 text-sm text-slate-500">
-                          {record.doctor_name || "Doctor pending"} | urgency {record.urgency}
+                          {record.doctor_name || "Doctor pending"} | urgency {record.urgency} | {new Date(record.appointment_date).toLocaleDateString()}
                         </p>
                       </div>
                       <button type="button" className="secondary-button" onClick={() => handleRecordSave(record.id)}>
@@ -378,6 +552,10 @@ export default function AdminPage({ session }) {
                         value={recordDrafts[record.id]?.status || ""}
                         onChange={(event) => updateRecordDraft(record.id, "status", event.target.value)}
                       >
+                        <option value="pending">Pending</option>
+                        <option value="accepted">Accepted</option>
+                        <option value="rejected">Rejected</option>
+                        <option value="cancelled">Cancelled</option>
                         <option value="scheduled">Scheduled</option>
                         <option value="under_review">Under review</option>
                         <option value="transferred">Transferred</option>
@@ -387,12 +565,18 @@ export default function AdminPage({ session }) {
                         className="field h-24 resize-none py-3"
                         value={recordDrafts[record.id]?.ai_summary || ""}
                         onChange={(event) => updateRecordDraft(record.id, "ai_summary", event.target.value)}
+                        placeholder="Diagnosis or clinical summary"
                       />
                       <textarea
                         className="field h-24 resize-none py-3"
                         value={recordDrafts[record.id]?.next_steps || ""}
                         onChange={(event) => updateRecordDraft(record.id, "next_steps", event.target.value)}
+                        placeholder="Reports, notes, or next steps"
                       />
+                    </div>
+                    <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4">
+                      <p className="text-sm font-semibold text-slate-700">Symptoms</p>
+                      <p className="mt-2 text-sm text-slate-600">{record.symptoms || "No symptoms recorded yet."}</p>
                     </div>
                     <div className="mt-5 rounded-[24px] border border-slate-200 bg-white p-4">
                       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -442,6 +626,117 @@ export default function AdminPage({ session }) {
           </section>
 
           <section className="space-y-6">
+            <div className="glass-panel p-6">
+              <h2 className="font-display text-2xl font-bold tracking-tight">Appointments</h2>
+              <div className="mt-5 space-y-4">
+                {overview.appointments.length ? (
+                  overview.appointments.map((appointment) => (
+                    <div key={appointment.id} className="rounded-[24px] border border-slate-200 bg-slate-50 p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <p className="font-semibold text-slate-900">
+                          {appointment.patient_full_name || appointment.patient_name}
+                        </p>
+                        <span className="chip">{appointment.status}</span>
+                      </div>
+                      <p className="mt-2 text-sm text-slate-500">
+                        {appointment.doctor_name || "Doctor pending"} | token {appointment.token_number || "Pending"}
+                      </p>
+                      <p className="mt-2 text-sm text-slate-500">
+                        Appointment date {new Date(appointment.appointment_date).toLocaleDateString()}
+                      </p>
+                      <p className="mt-3 text-sm text-slate-600">{appointment.symptoms || "No symptoms provided."}</p>
+                      {appointment.status === "pending" ? (
+                        <div className="mt-4 flex flex-wrap gap-3">
+                          <button
+                            type="button"
+                            className="primary-button"
+                            onClick={() => handleAppointmentStatus(appointment.id, "accepted")}
+                            disabled={appointmentActionId === appointment.id}
+                          >
+                            {appointmentActionId === appointment.id ? "Updating..." : "Accept"}
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            onClick={() => handleAppointmentStatus(appointment.id, "rejected")}
+                            disabled={appointmentActionId === appointment.id}
+                          >
+                            {appointmentActionId === appointment.id ? "Updating..." : "Reject"}
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                  ))
+                ) : (
+                  <EmptyState title="No appointments" description="Booked patient appointments will appear here." />
+                )}
+              </div>
+            </div>
+
+            <div className="glass-panel p-6">
+              <h2 className="font-display text-2xl font-bold tracking-tight">Add Patient Record</h2>
+              <p className="mt-2 text-sm text-slate-500">
+                Create a clinical record for a patient already associated with this hospital.
+              </p>
+              <form onSubmit={handleNewRecordSubmit} className="mt-5 space-y-4">
+                <select
+                  className="field"
+                  name="patient_id"
+                  value={newRecordForm.patient_id}
+                  onChange={handleNewRecordChange}
+                  required
+                >
+                  <option value="">Select patient</option>
+                  {overview.patient_options.map((patient) => (
+                    <option key={patient.id} value={patient.id}>
+                      {patient.full_name}{patient.phone ? ` | ${patient.phone}` : ""}
+                    </option>
+                  ))}
+                </select>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <select className="field" name="urgency" value={newRecordForm.urgency} onChange={handleNewRecordChange}>
+                    <option value="normal">Normal</option>
+                    <option value="urgent">Urgent</option>
+                    <option value="critical">Critical</option>
+                  </select>
+                  <select className="field" name="status" value={newRecordForm.status} onChange={handleNewRecordChange}>
+                    <option value="pending">Pending</option>
+                    <option value="accepted">Accepted</option>
+                    <option value="rejected">Rejected</option>
+                    <option value="cancelled">Cancelled</option>
+                    <option value="under_review">Under review</option>
+                    <option value="scheduled">Scheduled</option>
+                    <option value="completed">Completed</option>
+                    <option value="transferred">Transferred</option>
+                  </select>
+                </div>
+                <textarea
+                  className="field h-24 resize-none py-3"
+                  name="symptoms"
+                  value={newRecordForm.symptoms}
+                  onChange={handleNewRecordChange}
+                  placeholder="Symptoms or presenting complaint"
+                />
+                <textarea
+                  className="field h-24 resize-none py-3"
+                  name="ai_summary"
+                  value={newRecordForm.ai_summary}
+                  onChange={handleNewRecordChange}
+                  placeholder="Diagnosis or record details"
+                />
+                <textarea
+                  className="field h-24 resize-none py-3"
+                  name="next_steps"
+                  value={newRecordForm.next_steps}
+                  onChange={handleNewRecordChange}
+                  placeholder="Reports, treatment plan, or next steps"
+                />
+                <button type="submit" className="primary-button w-full" disabled={!overview.patient_options.length}>
+                  Create patient record
+                </button>
+              </form>
+            </div>
+
             <div className="glass-panel p-6">
               <h2 className="font-display text-2xl font-bold tracking-tight">Inter-Hospital Coordination</h2>
               <p className="mt-2 text-sm text-slate-500">

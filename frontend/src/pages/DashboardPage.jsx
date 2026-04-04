@@ -2,7 +2,12 @@ import { useEffect, useState } from "react";
 
 import EmptyState from "../components/EmptyState";
 import ErrorState from "../components/ErrorState";
-import { createPatientSosAlert, getPatientDashboard } from "../services/api";
+import {
+  cancelPatientAppointment,
+  createPatientSosAlert,
+  deletePatientRecord,
+  getPatientDashboard,
+} from "../services/api";
 import { getPatientUploads, getSavedHospitals, persistPatientUploads } from "../utils/storage";
 
 
@@ -41,6 +46,7 @@ export default function DashboardPage({ session }) {
     urgency: "critical",
   });
   const [sosState, setSosState] = useState({ loading: false, error: "" });
+  const [recordActionState, setRecordActionState] = useState({ loadingId: null, error: "" });
 
   async function loadDashboard() {
     setPageState({ loading: true, error: "" });
@@ -100,6 +106,34 @@ export default function DashboardPage({ session }) {
     setPatientUploads(nextUploads);
     setPendingFiles([]);
     setUploadStatus(`${pendingFiles.length} file${pendingFiles.length > 1 ? "s" : ""} uploaded successfully.`);
+  }
+
+  async function handleCancelAppointment(bookingId) {
+    setRecordActionState({ loadingId: bookingId, error: "" });
+    try {
+      await cancelPatientAppointment(bookingId);
+      await loadDashboard();
+      setRecordActionState({ loadingId: null, error: "" });
+    } catch (error) {
+      setRecordActionState({
+        loadingId: null,
+        error: error?.response?.data?.detail || "Appointment could not be cancelled.",
+      });
+    }
+  }
+
+  async function handleDeleteRecord(bookingId) {
+    setRecordActionState({ loadingId: bookingId, error: "" });
+    try {
+      await deletePatientRecord(bookingId);
+      await loadDashboard();
+      setRecordActionState({ loadingId: null, error: "" });
+    } catch (error) {
+      setRecordActionState({
+        loadingId: null,
+        error: error?.response?.data?.detail || "Record could not be deleted.",
+      });
+    }
   }
 
   return (
@@ -242,6 +276,11 @@ export default function DashboardPage({ session }) {
         <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
           <section className="glass-panel p-6">
             <h2 className="font-display text-2xl font-bold tracking-tight">Appointment history</h2>
+            {recordActionState.error ? (
+              <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+                {recordActionState.error}
+              </div>
+            ) : null}
             <div className="mt-5 space-y-4">
               {dashboard.history.length ? (
                 dashboard.history.map((item) => (
@@ -254,6 +293,26 @@ export default function DashboardPage({ session }) {
                       {item.doctor_name || "Doctor assignment pending"} | urgency {item.urgency}
                     </p>
                     <p className="mt-3 text-sm text-slate-600">{item.ai_summary}</p>
+                    <div className="mt-4 flex flex-wrap gap-3">
+                      {!["cancelled", "completed", "rejected", "transferred"].includes(item.status) ? (
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={() => handleCancelAppointment(item.id)}
+                          disabled={recordActionState.loadingId === item.id}
+                        >
+                          {recordActionState.loadingId === item.id ? "Updating..." : "Cancel Appointment"}
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => handleDeleteRecord(item.id)}
+                        disabled={recordActionState.loadingId === item.id}
+                      >
+                        {recordActionState.loadingId === item.id ? "Updating..." : "Delete Record"}
+                      </button>
+                    </div>
                   </div>
                 ))
               ) : (
