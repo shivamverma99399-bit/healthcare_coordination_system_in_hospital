@@ -179,38 +179,38 @@ function buildFallbackAdminOverview() {
 
 
 export async function getDemoAccounts() {
-  const { data } = await api.get("/auth/demo-accounts");
+  const { data } = await api.get("auth/demo-accounts");
   return data.accounts || [];
 }
 
 
 export async function loginPortal(payload) {
-  const { data } = await api.post("/auth/login", payload);
+  const { data } = await api.post("auth/login", payload);
   return data;
 }
 
 
 export async function getActiveSession() {
-  const { data } = await api.get("/auth/session", authConfig());
+  const { data } = await api.get("auth/session", authConfig());
   return data;
 }
 
 
 export async function logoutPortal() {
-  const { data } = await api.post("/auth/logout", {}, authConfig());
+  const { data } = await api.post("auth/logout", {}, authConfig());
   return data;
 }
 
 
 export async function analyzeSymptoms(payload) {
-  const { data } = await api.post("/analyze-symptoms", payload, authConfig());
+  const { data } = await api.post("analyze-symptoms", payload, authConfig());
   return data;
 }
 
 
 export async function getHospitalRecommendations(params) {
   try {
-    const { data } = await api.get("/hospitals/recommendations", authConfig({ params }));
+    const { data } = await api.get("hospitals/recommendations", authConfig({ params }));
     return data;
   } catch {
     return fallbackRecommendationList(params);
@@ -220,7 +220,7 @@ export async function getHospitalRecommendations(params) {
 
 export async function getDoctorsByHospital(hospitalId, specialization) {
   try {
-    const { data } = await api.get("/doctors/by-hospital", authConfig({
+    const { data } = await api.get("doctors/by-hospital", authConfig({
       params: { id: hospitalId, specialization },
     }));
     return data;
@@ -232,7 +232,7 @@ export async function getDoctorsByHospital(hospitalId, specialization) {
 
 export async function bookAppointment(payload) {
   try {
-    const { data } = await api.post("/book-appointment", payload, authConfig());
+    const { data } = await api.post("book-appointment", payload, authConfig());
     persistPatientBooking({
       id: data.booking_id,
       patient_name: payload.patient_name,
@@ -275,7 +275,7 @@ export async function bookAppointment(payload) {
 
 export async function getPatientDashboard() {
   try {
-    const { data } = await api.get("/patient/dashboard", authConfig());
+    const { data } = await api.get("patient/dashboard", authConfig());
     return data;
   } catch (error) {
     if (!shouldUsePatientDemoFallback(error)) {
@@ -288,7 +288,7 @@ export async function getPatientDashboard() {
 
 export async function createPatientSosAlert(payload) {
   try {
-    const { data } = await api.post("/patient/sos-alerts", payload, authConfig());
+    const { data } = await api.post("patient/sos-alerts", payload, authConfig());
     persistPatientAlert(data);
     return data;
   } catch (error) {
@@ -312,7 +312,7 @@ export async function createPatientSosAlert(payload) {
 
 export async function getAdminOverview() {
   try {
-    const { data } = await api.get("/admin/overview", authConfig());
+    const { data } = await api.get("admin/overview", authConfig());
     return data;
   } catch (error) {
     if (!shouldUseAdminDemoFallback(error)) {
@@ -325,7 +325,7 @@ export async function getAdminOverview() {
 
 export async function updateHospitalResources(hospitalId, payload) {
   try {
-    const { data } = await api.patch(`/admin/hospitals/${hospitalId}`, payload, authConfig());
+    const { data } = await api.patch(`admin/hospitals/${hospitalId}`, payload, authConfig());
     return data;
   } catch (error) {
     if (!shouldUseAdminDemoFallback(error)) {
@@ -338,7 +338,7 @@ export async function updateHospitalResources(hospitalId, payload) {
 
 export async function updatePatientRecord(recordId, payload) {
   try {
-    const { data } = await api.patch(`/admin/patient-records/${recordId}`, payload, authConfig());
+    const { data } = await api.patch(`admin/patient-records/${recordId}`, payload, authConfig());
     return data;
   } catch (error) {
     if (!shouldUseAdminDemoFallback(error)) {
@@ -350,14 +350,14 @@ export async function updatePatientRecord(recordId, payload) {
 
 
 export async function getAdminTransfers() {
-  const { data } = await api.get("/admin/transfers", authConfig());
+  const { data } = await api.get("admin/transfers", authConfig());
   return data;
 }
 
 
 export async function createTransfer(payload) {
   try {
-    const { data } = await api.post("/admin/transfers", payload, authConfig());
+    const { data } = await api.post("admin/transfers", payload, authConfig());
     persistAdminTransfer(data);
     return data;
   } catch (error) {

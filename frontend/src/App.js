@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { API_BASE_URL } from "./config/api";
+import { buildApiUrl } from "./config/api";
 
 function App() {
   const [symptom, setSymptom] = useState("");
@@ -10,7 +10,7 @@ function App() {
     setLoading(true);
     try {
       const res = await fetch(
-        `${API_BASE_URL}/recommend/?lat=28.6&lng=77.2&symptom=${encodeURIComponent(symptom)}`
+        `${buildApiUrl("recommend/")}?lat=28.6&lng=77.2&symptom=${encodeURIComponent(symptom)}`
       );
       const data = await res.json();
 
