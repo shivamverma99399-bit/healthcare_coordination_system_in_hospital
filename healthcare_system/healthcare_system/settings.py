@@ -146,10 +146,17 @@ def parse_database_url(database_url):
     parsed = urlparse(database_url)
 
     if parsed.scheme == "sqlite":
-        db_name = unquote(parsed.path.lstrip("/")) or str(BASE_DIR / "db.sqlite3")
+        db_name = unquote(parsed.path.lstrip("/"))
+        if not db_name:
+            db_path = BASE_DIR / "db.sqlite3"
+        else:
+            candidate = Path(db_name)
+            db_path = candidate if candidate.is_absolute() else BASE_DIR / candidate
+
+        db_path.parent.mkdir(parents=True, exist_ok=True)
         return {
             "ENGINE": "django.db.backends.sqlite3",
-            "NAME": db_name,
+            "NAME": str(db_path),
         }
 
     return {
