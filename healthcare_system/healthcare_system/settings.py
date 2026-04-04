@@ -67,7 +67,7 @@ CORS_ALLOWED_ORIGINS = env_list(
     "DJANGO_CORS_ALLOWED_ORIGINS",
     "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080,http://127.0.0.1:8080"
     if DEBUG
-    else "",
+    else "https://healthcare-coordination-system-in-hospital-3kfrm74g.vercel.app",
 )
 
 render_hostname = os.getenv("RENDER_EXTERNAL_HOSTNAME", "").strip()
