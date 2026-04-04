@@ -2,133 +2,78 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import DemoLoginSuggestion from "../components/DemoLoginSuggestion";
-import { getDemoAccounts, loginPortal } from "../services/api";
+import {
+  buildDemoAdminSession,
+  DEMO_HOSPITALS,
+  validateDemoAdminLogin,
+} from "../utils/demoAuth";
 import { persistSession } from "../utils/storage";
-
-const fallbackAdminAccounts = [
-  {
-    email: "admin1@medpulse.local",
-    password: "admin123",
-    hospital_name: "Demo Hospital Admin",
-    role: "hospital_admin",
-  },
-];
 
 
 export default function AdminLoginPage({ session, onSessionChange }) {
   const navigate = useNavigate();
-  const [demoAccounts, setDemoAccounts] = useState([]);
   const [focusedField, setFocusedField] = useState("");
-  const [form, setForm] = useState({ email: "", password: "" });
-  const [status, setStatus] = useState({ loading: false, error: "" });
+  const [form, setForm] = useState({ email: "", password: "", name: "", hospital: "" });
+  const [status, setStatus] = useState({ loading: false, error: "", fieldErrors: {} });
 
   useEffect(() => {
     if (session?.role === "hospital_admin") {
       navigate("/hospital-admin/portal", { replace: true });
-      return;
     }
-
-    getDemoAccounts()
-      .then((accounts) => {
-        const adminAccounts = accounts.filter((item) => item.role === "hospital_admin");
-        setDemoAccounts(adminAccounts.length ? adminAccounts : fallbackAdminAccounts);
-      })
-      .catch(() => setDemoAccounts(fallbackAdminAccounts));
   }, [navigate, session]);
 
   function handleChange(event) {
     const { name, value } = event.target;
     setForm((current) => ({ ...current, [name]: value }));
-  }
-
-  async function handleSubmit(event) {
-    event.preventDefault();
-    setStatus({ loading: true, error: "" });
-
-    try {
-      const sessionData = await loginPortal({
-        role: "hospital_admin",
-        ...form,
-      });
-      persistSession(sessionData);
-      onSessionChange(sessionData);
-      navigate("/hospital-admin/portal");
-    } catch (error) {
-      const normalizedEmail = form.email.trim().toLowerCase();
-      const matchedDemo =
-        demoAccounts.find((account) => account.email === normalizedEmail) ||
-        fallbackAdminAccounts.find((account) => account.email === normalizedEmail);
-
-      if (matchedDemo && form.password === matchedDemo.password) {
-        const sessionData = buildLocalAdminSession(matchedDemo, form);
-        persistSession(sessionData);
-        onSessionChange(sessionData);
-        navigate("/hospital-admin/portal");
-        return;
-      }
-
-      setStatus({
-        loading: false,
-        error: error?.response?.data?.detail || "Hospital admin login failed.",
-      });
-    }
-  }
-
-  function useDemo(account) {
-    setForm({ email: account.email, password: account.password });
-  }
-
-  function buildLocalAdminSession(account, values) {
-    const resolvedAccount = account || suggestedAdminAccount || fallbackAdminAccounts[0];
-    const email = values?.email || resolvedAccount.email;
-
-    return {
-      token: `demo-admin-${Date.now()}`,
-      role: "hospital_admin",
-      email,
-      display_name: "Admin 1",
-      profile: {
-        name: "Admin 1",
-        admin_id: "ADM-DEMO",
-        title: "Hospital Operations Admin",
-        hospital: {
-          id: 1,
-          name: resolvedAccount.hospital_name || "Demo Hospital",
-          location: "Delhi",
-        },
+    setStatus((current) => ({
+      ...current,
+      error: "",
+      fieldErrors: {
+        ...current.fieldErrors,
+        [name]: "",
       },
-    };
+    }));
   }
 
-  async function handleDemoLogin(account) {
-    if (!account) {
+  function handleSubmit(event) {
+    event.preventDefault();
+    const fieldErrors = validateDemoAdminLogin(form);
+    if (Object.keys(fieldErrors).length) {
+      setStatus({ loading: false, error: "", fieldErrors });
       return;
     }
 
-    setStatus({ loading: true, error: "" });
-
-    try {
-      const sessionData = await loginPortal({
-        role: "hospital_admin",
-        email: account.email,
-        password: account.password,
-      });
-      persistSession(sessionData);
-      onSessionChange(sessionData);
-      navigate("/hospital-admin/portal");
-    } catch {
-      const sessionData = buildLocalAdminSession(account, {
-        email: account.email,
-        password: account.password,
-      });
-      persistSession(sessionData);
-      onSessionChange(sessionData);
-      navigate("/hospital-admin/portal");
-    }
+    setStatus({ loading: true, error: "", fieldErrors: {} });
+    const sessionData = buildDemoAdminSession(form);
+    persistSession(sessionData);
+    onSessionChange(sessionData);
+    navigate("/hospital-admin/portal");
   }
 
-  const suggestedAdminAccount =
-    demoAccounts.find((account) => account.email === form.email) || demoAccounts[0] || fallbackAdminAccounts[0];
+  function useDemo() {
+    setForm({
+      email: "admin@medpulse.local",
+      password: "admin123",
+      name: "Admin 1",
+      hospital: String(DEMO_HOSPITALS[0].id),
+    });
+  }
+
+  function handleDemoLogin() {
+    const sessionData = buildDemoAdminSession({
+      email: "admin@medpulse.local",
+      password: "admin123",
+      name: "Admin 1",
+      hospital: String(DEMO_HOSPITALS[0].id),
+    });
+    setStatus({ loading: true, error: "", fieldErrors: {} });
+    persistSession(sessionData);
+    onSessionChange(sessionData);
+    navigate("/hospital-admin/portal");
+  }
+
+  const suggestedAdminEmail = "admin@medpulse.local";
+  const suggestedAdminPassword = "admin123";
 
   return (
     <div className="section-shell pb-16 pt-10">
@@ -143,37 +88,32 @@ export default function AdminLoginPage({ session, onSessionChange }) {
             analytics, and report sharing with receiving hospitals.
           </p>
           <div className="mt-6 space-y-4">
-            {demoAccounts.map((account) => (
-              <DemoLoginSuggestion
-                key={account.email}
-                title={account.hospital_name}
-                description="Use this demo admin account to open the hospital coordination portal."
-                email={account.email}
-                password={account.password}
-                actions={[
-                  { label: "Use demo details", variant: "secondary", onClick: () => useDemo(account) },
-                  { label: "Login as admin", onClick: () => handleDemoLogin(account) },
-                ]}
-              />
-            ))}
+            <DemoLoginSuggestion
+              title="Demo admin login"
+              description="Use instant frontend-only demo access with hospital selection."
+              email={suggestedAdminEmail}
+              password={suggestedAdminPassword}
+              actions={[
+                { label: "Use demo details", variant: "secondary", onClick: useDemo },
+                { label: "Login as admin", onClick: handleDemoLogin },
+              ]}
+            />
           </div>
         </section>
 
         <section className="glass-panel p-6">
-          {demoAccounts[0] ? (
-            <div className="mb-5">
-              <DemoLoginSuggestion
-                title="Suggested demo admin login"
-                description={`Quickest way to explore the admin workflow for ${demoAccounts[0].hospital_name}.`}
-                email={demoAccounts[0].email}
-                password={demoAccounts[0].password}
-                actions={[
-                  { label: "Fill demo credentials", variant: "secondary", onClick: () => useDemo(demoAccounts[0]) },
-                  { label: "Quick demo login", onClick: () => handleDemoLogin(demoAccounts[0]) },
-                ]}
-              />
-            </div>
-          ) : null}
+          <div className="mb-5">
+            <DemoLoginSuggestion
+              title="Suggested demo admin login"
+              description="Fill the fields or use one-click demo login. Backend authentication is bypassed."
+              email={suggestedAdminEmail}
+              password={suggestedAdminPassword}
+              actions={[
+                { label: "Fill demo credentials", variant: "secondary", onClick: useDemo },
+                { label: "Quick demo login", onClick: handleDemoLogin },
+              ]}
+            />
+          </div>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label className="mb-2 block text-sm font-medium text-slate-600">Admin email</label>
@@ -186,15 +126,18 @@ export default function AdminLoginPage({ session, onSessionChange }) {
                 onFocus={() => setFocusedField("email")}
                 required
               />
-              {focusedField === "email" && suggestedAdminAccount ? (
+              {focusedField === "email" ? (
                 <button
                   type="button"
                   className="mt-2 text-sm text-brand-blue"
                   onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => setForm((current) => ({ ...current, email: suggestedAdminAccount.email }))}
+                  onClick={() => setForm((current) => ({ ...current, email: suggestedAdminEmail }))}
                 >
-                  Suggestion: use demo email `{suggestedAdminAccount.email}`
+                  Suggestion: use demo email `{suggestedAdminEmail}`
                 </button>
+              ) : null}
+              {status.fieldErrors.email ? (
+                <p className="mt-2 text-sm text-red-600">{status.fieldErrors.email}</p>
               ) : null}
             </div>
             <div>
@@ -208,15 +151,42 @@ export default function AdminLoginPage({ session, onSessionChange }) {
                 onFocus={() => setFocusedField("password")}
                 required
               />
-              {focusedField === "password" && suggestedAdminAccount ? (
+              {focusedField === "password" ? (
                 <button
                   type="button"
                   className="mt-2 text-sm text-brand-blue"
                   onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => setForm((current) => ({ ...current, password: suggestedAdminAccount.password }))}
+                  onClick={() => setForm((current) => ({ ...current, password: suggestedAdminPassword }))}
                 >
-                  Suggestion: use demo password `{suggestedAdminAccount.password}`
+                  Suggestion: use demo password `{suggestedAdminPassword}`
                 </button>
+              ) : null}
+              {status.fieldErrors.password ? (
+                <p className="mt-2 text-sm text-red-600">{status.fieldErrors.password}</p>
+              ) : null}
+            </div>
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-600">Admin name</label>
+              <input
+                className="field"
+                name="name"
+                value={form.name}
+                onChange={handleChange}
+                placeholder="Admin name"
+              />
+            </div>
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-600">Hospital</label>
+              <select className="field" name="hospital" value={form.hospital} onChange={handleChange} required>
+                <option value="">Select hospital</option>
+                {DEMO_HOSPITALS.map((hospital) => (
+                  <option key={hospital.id} value={hospital.id}>
+                    {hospital.name}
+                  </option>
+                ))}
+              </select>
+              {status.fieldErrors.hospital ? (
+                <p className="mt-2 text-sm text-red-600">{status.fieldErrors.hospital}</p>
               ) : null}
             </div>
             <button type="submit" className="primary-button w-full">

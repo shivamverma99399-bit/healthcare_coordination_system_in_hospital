@@ -218,7 +218,7 @@ export default function AdminPage({ session }) {
     }));
   }
 
-  function handleRecordUpload(recordId) {
+  async function handleRecordUpload(recordId) {
     const files = pendingRecordFiles[recordId] || [];
     if (!files.length) {
       setRecordUploadStatus((current) => ({
@@ -228,16 +228,23 @@ export default function AdminPage({ session }) {
       return;
     }
 
-    const nextUploads = persistAdminRecordUploads(recordId, files);
-    setRecordUploads(nextUploads);
-    setPendingRecordFiles((current) => ({
-      ...current,
-      [recordId]: [],
-    }));
-    setRecordUploadStatus((current) => ({
-      ...current,
-      [recordId]: `${files.length} file${files.length > 1 ? "s" : ""} uploaded successfully.`,
-    }));
+    try {
+      const nextUploads = await persistAdminRecordUploads(recordId, files);
+      setRecordUploads(nextUploads);
+      setPendingRecordFiles((current) => ({
+        ...current,
+        [recordId]: [],
+      }));
+      setRecordUploadStatus((current) => ({
+        ...current,
+        [recordId]: `${files.length} PDF file${files.length > 1 ? "s" : ""} uploaded and shared with the patient dashboard.`,
+      }));
+    } catch (error) {
+      setRecordUploadStatus((current) => ({
+        ...current,
+        [recordId]: error?.message || "Files could not be uploaded right now.",
+      }));
+    }
   }
 
   function handleTransferChange(event) {
@@ -593,6 +600,7 @@ export default function AdminPage({ session }) {
                       <input
                         className="field mt-4 py-3"
                         type="file"
+                        accept="application/pdf"
                         multiple
                         onChange={(event) => handleRecordFileSelection(record.id, event)}
                       />

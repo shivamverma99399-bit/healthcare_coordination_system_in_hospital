@@ -2,33 +2,28 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import DemoLoginSuggestion from "../components/DemoLoginSuggestion";
-import { getDemoAccounts, loginPortal } from "../services/api";
+import {
+  buildDemoPatientSession,
+  validateDemoPatientLogin,
+} from "../utils/demoAuth";
 import { persistSession } from "../utils/storage";
 
 
 export default function PatientLoginPage({ session, onSessionChange }) {
   const navigate = useNavigate();
-  const [demoAccount, setDemoAccount] = useState(null);
   const [focusedField, setFocusedField] = useState("");
   const [form, setForm] = useState({
     email: "",
     password: "",
     full_name: "",
-    city: "Delhi",
     phone: "",
-    emergency_contact: "",
   });
   const [status, setStatus] = useState({ loading: false, error: "", fieldErrors: {} });
 
   useEffect(() => {
     if (session?.role === "patient") {
-      navigate("/patient/intake", { replace: true });
-      return;
+      navigate("/patient/dashboard", { replace: true });
     }
-
-    getDemoAccounts()
-      .then((accounts) => setDemoAccount(accounts.find((item) => item.role === "patient") || null))
-      .catch(() => setDemoAccount(null));
   }, [navigate, session]);
 
   function handleChange(event) {
@@ -45,21 +40,10 @@ export default function PatientLoginPage({ session, onSessionChange }) {
   }
 
   function validateForm() {
-    const fieldErrors = {};
-    const normalizedEmail = form.email.trim();
-    const phoneDigits = form.phone.replace(/\D/g, "");
-
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
-      fieldErrors.email = "Enter a valid email address.";
-    }
-    if (phoneDigits.length !== 10) {
-      fieldErrors.phone = "Mobile number must be exactly 10 digits.";
-    }
-
-    return fieldErrors;
+    return validateDemoPatientLogin(form);
   }
 
-  async function handleSubmit(event) {
+  function handleSubmit(event) {
     event.preventDefault();
     const fieldErrors = validateForm();
     if (Object.keys(fieldErrors).length) {
@@ -68,106 +52,38 @@ export default function PatientLoginPage({ session, onSessionChange }) {
     }
 
     setStatus({ loading: true, error: "", fieldErrors: {} });
-
-    try {
-      const sessionData = await loginPortal({
-        role: "patient",
-        ...form,
-      });
-      persistSession(sessionData);
-      onSessionChange(sessionData);
-      navigate("/patient/intake");
-    } catch (error) {
-      const normalizedEmail = form.email.trim().toLowerCase();
-      if (demoAccount && normalizedEmail === demoAccount.email) {
-        const sessionData = buildLocalDemoSession(form);
-        persistSession(sessionData);
-        onSessionChange(sessionData);
-        navigate("/patient/intake");
-        return;
-      }
-
-      setStatus({
-        loading: false,
-        error: error?.response?.data?.detail || "Patient login failed.",
-        fieldErrors: error?.response?.data || {},
-      });
-    }
+    const sessionData = buildDemoPatientSession(form);
+    persistSession(sessionData);
+    onSessionChange(sessionData);
+    navigate("/patient/dashboard");
   }
 
   function applyDemo() {
-    if (!demoAccount) {
-      return;
-    }
-
     setForm((current) => ({
       ...current,
-      email: demoAccount.email,
-      password: demoAccount.password,
+      email: "patient@medpulse.local",
+      password: "patient123",
       full_name: "Asha Verma",
-      city: "Delhi",
       phone: "9999999999",
-      emergency_contact: "Rohan Verma",
     }));
   }
 
-  function buildLocalDemoSession(values) {
-    const displayName =
-      values.full_name?.trim() ||
-      values.email.split("@", 1)[0].replace(/[._-]+/g, " ").trim() ||
-      "Demo Patient";
-
-    return {
-      token: `demo-patient-${Date.now()}`,
-      role: "patient",
-      email: values.email,
-      display_name: displayName,
-      profile: {
-        full_name: displayName,
-        city: values.city || "Delhi",
-        phone: values.phone || "9999999999",
-        emergency_contact: values.emergency_contact || "Demo Emergency Contact",
-      },
+  function handleDemoLogin() {
+    const demoValues = {
+      email: "patient@medpulse.local",
+      password: "patient123",
+      full_name: "Asha Verma",
+      phone: "9999999999",
     };
-  }
-
-  async function handleDemoLogin() {
-    if (!demoAccount) {
-      return;
-    }
-
     setStatus({ loading: true, error: "", fieldErrors: {} });
-
-    try {
-      const sessionData = await loginPortal({
-        role: "patient",
-        email: demoAccount.email,
-        password: demoAccount.password,
-        full_name: "Asha Verma",
-        city: "Delhi",
-        phone: "9999999999",
-        emergency_contact: "Rohan Verma",
-      });
-      persistSession(sessionData);
-      onSessionChange(sessionData);
-      navigate("/patient/intake");
-    } catch {
-      const sessionData = buildLocalDemoSession({
-        email: demoAccount.email,
-        password: demoAccount.password,
-        full_name: "Asha Verma",
-        city: "Delhi",
-        phone: "9999999999",
-        emergency_contact: "Rohan Verma",
-      });
-      persistSession(sessionData);
-      onSessionChange(sessionData);
-      navigate("/patient/intake");
-    }
+    const sessionData = buildDemoPatientSession(demoValues);
+    persistSession(sessionData);
+    onSessionChange(sessionData);
+    navigate("/patient/dashboard");
   }
 
-  const suggestedPatientEmail = demoAccount?.email || "patient@medpulse.local";
-  const suggestedPatientPassword = demoAccount?.password || "patient123";
+  const suggestedPatientEmail = "patient@medpulse.local";
+  const suggestedPatientPassword = "patient123";
 
   return (
     <div className="section-shell pb-16 pt-10">
@@ -178,40 +94,36 @@ export default function PatientLoginPage({ session, onSessionChange }) {
             Secure sign-in and profile setup
           </h1>
           <p className="mt-4 text-base leading-7 text-slate-600">
-            Use an existing patient account or create one by filling your name, city, and contact
-            details. After login you will move straight into symptom intake and AI triage.
+            Use an existing patient account or create one by filling your basic details. After
+            login you will move straight into symptom intake and AI triage.
           </p>
-          {demoAccount ? (
-            <div className="mt-6">
-              <DemoLoginSuggestion
-                title="Demo patient login"
-                description="Try the patient journey instantly with the preloaded demo account."
-                email={demoAccount.email}
-                password={demoAccount.password}
-                actions={[
-                  { label: "Use demo details", variant: "secondary", onClick: applyDemo },
-                  { label: "Login as demo patient", onClick: handleDemoLogin },
-                ]}
-              />
-            </div>
-          ) : null}
+          <div className="mt-6">
+            <DemoLoginSuggestion
+              title="Demo patient login"
+              description="Use instant frontend-only demo access with no backend dependency."
+              email={suggestedPatientEmail}
+              password={suggestedPatientPassword}
+              actions={[
+                { label: "Use demo details", variant: "secondary", onClick: applyDemo },
+                { label: "Login as demo patient", onClick: handleDemoLogin },
+              ]}
+            />
+          </div>
         </section>
 
         <section className="glass-panel p-6">
-          {demoAccount ? (
-            <div className="mb-5">
-              <DemoLoginSuggestion
-                title="Suggested demo login"
-                description="If you only want to explore the app, use these credentials or log in with one click."
-                email={demoAccount.email}
-                password={demoAccount.password}
-                actions={[
-                  { label: "Fill demo credentials", variant: "secondary", onClick: applyDemo },
-                  { label: "Quick demo login", onClick: handleDemoLogin },
-                ]}
-              />
-            </div>
-          ) : null}
+          <div className="mb-5">
+            <DemoLoginSuggestion
+              title="Suggested demo login"
+              description="If you only want to explore the app, use these demo values or log in with one click."
+              email={suggestedPatientEmail}
+              password={suggestedPatientPassword}
+              actions={[
+                { label: "Fill demo credentials", variant: "secondary", onClick: applyDemo },
+                { label: "Quick demo login", onClick: handleDemoLogin },
+              ]}
+            />
+          </div>
           <form onSubmit={handleSubmit} className="grid gap-4 sm:grid-cols-2">
             <div className="sm:col-span-2">
               <label className="mb-2 block text-sm font-medium text-slate-600">Email</label>
@@ -259,30 +171,20 @@ export default function PatientLoginPage({ session, onSessionChange }) {
                   Suggestion: use demo password `{suggestedPatientPassword}`
                 </button>
               ) : null}
+              {status.fieldErrors.password ? (
+                <p className="mt-2 text-sm text-red-600">{status.fieldErrors.password}</p>
+              ) : null}
             </div>
             <div className="sm:col-span-2">
               <label className="mb-2 block text-sm font-medium text-slate-600">Full name</label>
               <input className="field" name="full_name" value={form.full_name} onChange={handleChange} />
             </div>
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-600">City</label>
-              <input className="field" name="city" value={form.city} onChange={handleChange} />
-            </div>
-            <div>
+            <div className="sm:col-span-2">
               <label className="mb-2 block text-sm font-medium text-slate-600">Phone</label>
               <input className="field" name="phone" value={form.phone} onChange={handleChange} />
               {status.fieldErrors.phone ? (
                 <p className="mt-2 text-sm text-red-600">{status.fieldErrors.phone}</p>
               ) : null}
-            </div>
-            <div className="sm:col-span-2">
-              <label className="mb-2 block text-sm font-medium text-slate-600">Emergency contact</label>
-              <input
-                className="field"
-                name="emergency_contact"
-                value={form.emergency_contact}
-                onChange={handleChange}
-              />
             </div>
             <div className="sm:col-span-2">
               <button type="submit" className="primary-button w-full">

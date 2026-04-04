@@ -8,7 +8,13 @@ import {
   deletePatientRecord,
   getPatientDashboard,
 } from "../services/api";
-import { getPatientUploads, getSavedHospitals, persistPatientUploads } from "../utils/storage";
+import {
+  getPatientUploads,
+  getSavedHospitals,
+  persistPatientUploads,
+  removePatientAlert,
+  removePatientUpload,
+} from "../utils/storage";
 
 
 function StatTile({ label, value }) {
@@ -29,6 +35,29 @@ function formatFileSize(size) {
     return `${Math.round(size / 1024)} KB`;
   }
   return `${size} B`;
+}
+
+
+function createPdfBlobUrl(file) {
+  if (!file?.data) {
+    throw new Error("This PDF is missing its preview data. Please upload it again.");
+  }
+
+  const [header, base64] = String(file.data).split(",", 2);
+  if (!header?.startsWith("data:application/pdf") || !base64) {
+    throw new Error("This file is not a valid PDF preview. Please upload it again.");
+  }
+
+  const mimeType = header.slice(5, header.indexOf(";")) || "application/pdf";
+  const binary = window.atob(base64);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+
+  const blob = new Blob([bytes], { type: mimeType });
+  return URL.createObjectURL(blob);
 }
 
 
@@ -91,21 +120,58 @@ export default function DashboardPage({ session }) {
     }
   }
 
+  function handleDeleteSosUpdate(alertId) {
+    const nextAlerts = removePatientAlert(alertId);
+    setDashboard((current) => ({
+      ...current,
+      alerts: current.alerts.filter((alert) => alert.id !== alertId),
+      stats: {
+        ...current.stats,
+        active_alerts: nextAlerts.filter((alert) => alert.status === "active").length,
+      },
+    }));
+  }
+
   function handleFileSelection(event) {
-    setPendingFiles(Array.from(event.target.files || []));
+    setPendingFiles(Array.from(event.target.files || []).filter((file) => file.type === "application/pdf"));
     setUploadStatus("");
   }
 
-  function handleFileUpload() {
+  async function handleFileUpload() {
     if (!pendingFiles.length) {
-      setUploadStatus("Choose at least one file first.");
+      setUploadStatus("Choose at least one PDF file first.");
       return;
     }
 
-    const nextUploads = persistPatientUploads(pendingFiles);
+    try {
+      const nextUploads = await persistPatientUploads(pendingFiles);
+      setPatientUploads(nextUploads);
+      setPendingFiles([]);
+      setUploadStatus(`${pendingFiles.length} PDF file${pendingFiles.length > 1 ? "s" : ""} uploaded successfully.`);
+    } catch (error) {
+      setUploadStatus(error?.message || "PDF upload failed. Please try again.");
+    }
+  }
+
+  function handleViewFile(file) {
+    try {
+      const blobUrl = createPdfBlobUrl(file);
+      const openedWindow = window.open(blobUrl, "_blank");
+      if (!openedWindow) {
+        URL.revokeObjectURL(blobUrl);
+        throw new Error("Browser blocked the PDF tab. Allow pop-ups for this site and try again.");
+      }
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+      setUploadStatus("");
+    } catch (error) {
+      setUploadStatus(error?.message || "PDF could not be opened.");
+    }
+  }
+
+  function handleDeleteFile(uploadId) {
+    const nextUploads = removePatientUpload(uploadId);
     setPatientUploads(nextUploads);
-    setPendingFiles([]);
-    setUploadStatus(`${pendingFiles.length} file${pendingFiles.length > 1 ? "s" : ""} uploaded successfully.`);
+    setUploadStatus("PDF removed successfully.");
   }
 
   async function handleCancelAppointment(bookingId) {
@@ -242,26 +308,47 @@ export default function DashboardPage({ session }) {
             <div>
               <h2 className="font-display text-2xl font-bold tracking-tight">Medical Files Upload</h2>
               <p className="mt-2 text-sm text-slate-500">
-                Upload reports, prescriptions, scans, and discharge documents from your device.
+                Upload PDF reports, prescriptions, scans, and discharge documents from your device.
               </p>
             </div>
             <button type="button" className="secondary-button" onClick={handleFileUpload}>
               Upload files
             </button>
           </div>
-          <input className="field mt-5 py-3" type="file" multiple onChange={handleFileSelection} />
+          <input className="field mt-5 py-3" type="file" accept="application/pdf" multiple onChange={handleFileSelection} />
           {uploadStatus ? <p className="mt-3 text-sm text-brand-blue">{uploadStatus}</p> : null}
           <div className="mt-5 grid gap-4 md:grid-cols-2">
             {patientUploads.length ? (
               patientUploads.map((file) => (
                 <div key={file.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                   <div className="flex flex-wrap items-center justify-between gap-3">
-                    <p className="font-semibold text-slate-800">{file.name}</p>
-                    <span className="chip">{formatFileSize(file.size)}</span>
+                    <button
+                      type="button"
+                      className="text-left font-semibold text-brand-blue underline-offset-2 hover:underline"
+                      onClick={() => handleViewFile(file)}
+                    >
+                      {file.name}
+                    </button>
+                    <div className="flex items-center gap-3">
+                      <span className="chip">{formatFileSize(file.size)}</span>
+                      <button
+                        type="button"
+                        className="text-sm font-medium text-red-600 hover:text-red-700"
+                        onClick={() => handleDeleteFile(file.id)}
+                        aria-label={`Delete ${file.name}`}
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </div>
                   <p className="mt-2 text-sm text-slate-500">
-                    {file.type} | uploaded {new Date(file.uploaded_at).toLocaleString()}
+                    Uploaded {new Date(file.uploaded_at).toLocaleString()}
                   </p>
+                  {file.source === "admin" ? (
+                    <p className="mt-1 text-sm text-brand-blue">
+                      Shared by your hospital admin
+                    </p>
+                  ) : null}
                 </div>
               ))
             ) : (
@@ -328,16 +415,26 @@ export default function DashboardPage({ session }) {
             <h2 className="font-display text-2xl font-bold tracking-tight">Recent SOS updates</h2>
             <div className="mt-5 space-y-4">
               {dashboard.alerts.length ? (
-                dashboard.alerts.map((alert) => (
-                  <div key={alert.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <p className="font-semibold text-slate-800">{alert.hospital_name || "Unassigned"}</p>
-                      <span className="chip border-red-200 bg-red-50 text-red-700">{alert.status}</span>
+                  dashboard.alerts.map((alert) => (
+                    <div key={alert.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <p className="font-semibold text-slate-800">{alert.hospital_name || "Unassigned"}</p>
+                        <div className="flex items-center gap-3">
+                          <span className="chip border-red-200 bg-red-50 text-red-700">{alert.status}</span>
+                          <button
+                            type="button"
+                            className="text-sm font-medium text-red-600 hover:text-red-700"
+                            onClick={() => handleDeleteSosUpdate(alert.id)}
+                            aria-label={`Delete SOS update ${alert.id}`}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                      <p className="mt-2 text-sm text-slate-500">{alert.location_context}</p>
+                      <p className="mt-3 text-sm text-slate-600">{alert.message}</p>
                     </div>
-                    <p className="mt-2 text-sm text-slate-500">{alert.location_context}</p>
-                    <p className="mt-3 text-sm text-slate-600">{alert.message}</p>
-                  </div>
-                ))
+                  ))
               ) : (
                 <EmptyState
                   title="No SOS updates"

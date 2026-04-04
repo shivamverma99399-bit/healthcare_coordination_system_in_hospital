@@ -6,6 +6,7 @@ const PATIENT_UPLOADS_KEY = "medpulse:patient-uploads";
 const PATIENT_BOOKINGS_KEY = "medpulse:patient-bookings";
 const PATIENT_ALERTS_KEY = "medpulse:patient-alerts";
 const ADMIN_TRANSFERS_KEY = "medpulse:admin-transfers";
+const MAX_PATIENT_UPLOAD_SIZE_BYTES = 1024 * 1024 * 2;
 
 
 function readJson(key) {
@@ -23,17 +24,6 @@ function readObject(key) {
   } catch {
     return {};
   }
-}
-
-
-function serializeFiles(files = []) {
-  return Array.from(files).map((file, index) => ({
-    id: `${Date.now()}-${index}-${file.name}`,
-    name: file.name,
-    size: file.size,
-    type: file.type || "Unknown",
-    uploaded_at: new Date().toISOString(),
-  }));
 }
 
 
@@ -128,14 +118,45 @@ export function getAdminRecordUploads() {
 }
 
 
-export function persistAdminRecordUploads(recordId, files) {
-  const existing = getAdminRecordUploads();
-  const next = {
-    ...existing,
-    [recordId]: [...serializeFiles(files), ...(existing[recordId] || [])].slice(0, 12),
-  };
-  window.localStorage.setItem(ADMIN_RECORD_UPLOADS_KEY, JSON.stringify(next));
-  return next;
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error(`Unable to read ${file.name}`));
+    reader.readAsDataURL(file);
+  });
+}
+
+
+function createStorageError(message) {
+  const error = new Error(message);
+  error.name = "PatientUploadStorageError";
+  return error;
+}
+
+
+async function serializePdfFiles(files = [], extraFields = {}) {
+  const normalizedFiles = Array.from(files).filter((file) => file.type === "application/pdf");
+  if (!normalizedFiles.length) {
+    throw createStorageError("Only PDF files can be uploaded.");
+  }
+
+  const oversizedFile = normalizedFiles.find((file) => file.size > MAX_PATIENT_UPLOAD_SIZE_BYTES);
+  if (oversizedFile) {
+    throw createStorageError(`${oversizedFile.name} is too large. Please upload PDFs under 2 MB.`);
+  }
+
+  return Promise.all(
+    normalizedFiles.map(async (file, index) => ({
+      id: `${Date.now()}-${index}-${file.name}`,
+      name: file.name,
+      size: file.size,
+      type: file.type || "application/pdf",
+      data: await readFileAsDataUrl(file),
+      uploaded_at: new Date().toISOString(),
+      ...extraFields,
+    })),
+  );
 }
 
 
@@ -144,9 +165,48 @@ export function getPatientUploads() {
 }
 
 
-export function persistPatientUploads(files) {
+export async function persistAdminRecordUploads(recordId, files) {
+  const serializedFiles = await serializePdfFiles(files, {
+    source: "admin",
+    record_id: recordId,
+  });
+
+  const existingRecordUploads = getAdminRecordUploads();
+  const nextRecordUploads = {
+    ...existingRecordUploads,
+    [recordId]: [...serializedFiles, ...(existingRecordUploads[recordId] || [])].slice(0, 12),
+  };
+  const existingPatientUploads = getPatientUploads();
+  const nextPatientUploads = [...serializedFiles, ...existingPatientUploads].slice(0, 12);
+
+  try {
+    window.localStorage.setItem(ADMIN_RECORD_UPLOADS_KEY, JSON.stringify(nextRecordUploads));
+    window.localStorage.setItem(PATIENT_UPLOADS_KEY, JSON.stringify(nextPatientUploads));
+  } catch {
+    throw createStorageError("Not enough browser storage left for this PDF. Delete an older file or upload a smaller PDF.");
+  }
+
+  return nextRecordUploads;
+}
+
+
+export async function persistPatientUploads(files) {
+  const serializedFiles = await serializePdfFiles(files);
+
   const existing = getPatientUploads();
-  const next = [...serializeFiles(files), ...existing].slice(0, 12);
+  const next = [...serializedFiles, ...existing].slice(0, 12);
+  try {
+    window.localStorage.setItem(PATIENT_UPLOADS_KEY, JSON.stringify(next));
+  } catch {
+    throw createStorageError("Not enough browser storage left for this PDF. Delete an older file or upload a smaller PDF.");
+  }
+  return next;
+}
+
+
+export function removePatientUpload(uploadId) {
+  const existing = getPatientUploads();
+  const next = existing.filter((file) => file.id !== uploadId);
   window.localStorage.setItem(PATIENT_UPLOADS_KEY, JSON.stringify(next));
   return next;
 }
@@ -191,6 +251,14 @@ export function getPatientAlerts() {
 export function persistPatientAlert(alert) {
   const existing = getPatientAlerts();
   const next = [serializeAlert(alert), ...existing].slice(0, 12);
+  window.localStorage.setItem(PATIENT_ALERTS_KEY, JSON.stringify(next));
+  return next;
+}
+
+
+export function removePatientAlert(alertId) {
+  const existing = getPatientAlerts();
+  const next = existing.filter((alert) => alert.id !== alertId);
   window.localStorage.setItem(PATIENT_ALERTS_KEY, JSON.stringify(next));
   return next;
 }
