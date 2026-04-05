@@ -1,0 +1,11 @@
+# Backend Python dependencies only.
+# Install with:
+#   pip install -r requirements.txt
+# Frontend dependencies are separate and must be installed from `frontend/` with:
+#   npm install
+Django==6.0.3
+djangorestframework==3.17.1
+google-generativeai==0.8.6
+gunicorn==23.0.0
+whitenoise==6.9.0
+psycopg[binary]==3.2.13

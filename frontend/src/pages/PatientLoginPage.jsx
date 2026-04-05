@@ -1,22 +1,19 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-import DemoLoginSuggestion from "../components/DemoLoginSuggestion";
-import {
-  buildDemoPatientSession,
-  validateDemoPatientLogin,
-} from "../utils/demoAuth";
+import { loginPortal } from "../services/api";
 import { persistSession } from "../utils/storage";
 
 
 export default function PatientLoginPage({ session, onSessionChange }) {
   const navigate = useNavigate();
-  const [focusedField, setFocusedField] = useState("");
   const [form, setForm] = useState({
     email: "",
     password: "",
     full_name: "",
+    city: "Delhi",
     phone: "",
+    emergency_contact: "",
   });
   const [status, setStatus] = useState({ loading: false, error: "", fieldErrors: {} });
 
@@ -40,10 +37,25 @@ export default function PatientLoginPage({ session, onSessionChange }) {
   }
 
   function validateForm() {
-    return validateDemoPatientLogin(form);
+    const fieldErrors = {};
+    const email = String(form.email || "").trim();
+    const password = String(form.password || "");
+    const phoneDigits = String(form.phone || "").replace(/\D/g, "");
+
+    if (!email.includes("@") || !email.includes(".")) {
+      fieldErrors.email = "Enter a valid email address.";
+    }
+    if (!password.trim()) {
+      fieldErrors.password = "Password is required.";
+    }
+    if (phoneDigits.length !== 10) {
+      fieldErrors.phone = "Mobile number must be exactly 10 digits.";
+    }
+
+    return fieldErrors;
   }
 
-  function handleSubmit(event) {
+  async function handleSubmit(event) {
     event.preventDefault();
     const fieldErrors = validateForm();
     if (Object.keys(fieldErrors).length) {
@@ -52,38 +64,27 @@ export default function PatientLoginPage({ session, onSessionChange }) {
     }
 
     setStatus({ loading: true, error: "", fieldErrors: {} });
-    const sessionData = buildDemoPatientSession(form);
-    persistSession(sessionData);
-    onSessionChange(sessionData);
-    navigate("/patient/dashboard");
+    try {
+      const sessionData = await loginPortal({
+        role: "patient",
+        email: form.email,
+        password: form.password,
+        full_name: form.full_name,
+        city: form.city,
+        phone: form.phone,
+        emergency_contact: form.emergency_contact,
+      });
+      persistSession(sessionData);
+      onSessionChange(sessionData);
+      navigate("/patient/dashboard");
+    } catch (error) {
+      setStatus({
+        loading: false,
+        error: error?.message || "Patient login failed. Please check your credentials.",
+        fieldErrors: {},
+      });
+    }
   }
-
-  function applyDemo() {
-    setForm((current) => ({
-      ...current,
-      email: "patient@medpulse.local",
-      password: "patient123",
-      full_name: "Asha Verma",
-      phone: "9999999999",
-    }));
-  }
-
-  function handleDemoLogin() {
-    const demoValues = {
-      email: "patient@medpulse.local",
-      password: "patient123",
-      full_name: "Asha Verma",
-      phone: "9999999999",
-    };
-    setStatus({ loading: true, error: "", fieldErrors: {} });
-    const sessionData = buildDemoPatientSession(demoValues);
-    persistSession(sessionData);
-    onSessionChange(sessionData);
-    navigate("/patient/dashboard");
-  }
-
-  const suggestedPatientEmail = "patient@medpulse.local";
-  const suggestedPatientPassword = "patient123";
 
   return (
     <div className="section-shell pb-16 pt-10">
@@ -94,37 +95,18 @@ export default function PatientLoginPage({ session, onSessionChange }) {
             Secure sign-in and profile setup
           </h1>
           <p className="mt-4 text-base leading-7 text-slate-600">
-            Use an existing patient account or create one by filling your basic details. After
-            login you will move straight into symptom intake and AI triage.
+            Use an existing patient account or create one by signing in with your details. The
+            backend will store the patient profile, issue a token, and restore the same session on
+            refresh.
           </p>
-          <div className="mt-6">
-            <DemoLoginSuggestion
-              title="Demo patient login"
-              description="Use instant frontend-only demo access with no backend dependency."
-              email={suggestedPatientEmail}
-              password={suggestedPatientPassword}
-              actions={[
-                { label: "Use demo details", variant: "secondary", onClick: applyDemo },
-                { label: "Login as demo patient", onClick: handleDemoLogin },
-              ]}
-            />
+          <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+            First sign-in creates a patient profile if this email does not exist yet. Existing
+            patient accounts must use the original password.
           </div>
         </section>
 
         <section className="glass-panel p-6">
-          <div className="mb-5">
-            <DemoLoginSuggestion
-              title="Suggested demo login"
-              description="If you only want to explore the app, use these demo values or log in with one click."
-              email={suggestedPatientEmail}
-              password={suggestedPatientPassword}
-              actions={[
-                { label: "Fill demo credentials", variant: "secondary", onClick: applyDemo },
-                { label: "Quick demo login", onClick: handleDemoLogin },
-              ]}
-            />
-          </div>
-          <form onSubmit={handleSubmit} className="grid gap-4 sm:grid-cols-2">
+          <form onSubmit={handleSubmit} className="grid gap-4 md:grid-cols-2">
             <div className="sm:col-span-2">
               <label className="mb-2 block text-sm font-medium text-slate-600">Email</label>
               <input
@@ -133,24 +115,13 @@ export default function PatientLoginPage({ session, onSessionChange }) {
                 name="email"
                 value={form.email}
                 onChange={handleChange}
-                onFocus={() => setFocusedField("email")}
                 required
               />
-              {focusedField === "email" ? (
-                <button
-                  type="button"
-                  className="mt-2 text-sm text-brand-blue"
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => setForm((current) => ({ ...current, email: suggestedPatientEmail }))}
-                >
-                  Suggestion: use demo email `{suggestedPatientEmail}`
-                </button>
-              ) : null}
               {status.fieldErrors.email ? (
                 <p className="mt-2 text-sm text-red-600">{status.fieldErrors.email}</p>
               ) : null}
             </div>
-            <div className="sm:col-span-2">
+            <div className="sm:col-span-2 md:col-span-2">
               <label className="mb-2 block text-sm font-medium text-slate-600">Password</label>
               <input
                 className="field"
@@ -158,35 +129,37 @@ export default function PatientLoginPage({ session, onSessionChange }) {
                 name="password"
                 value={form.password}
                 onChange={handleChange}
-                onFocus={() => setFocusedField("password")}
                 required
               />
-              {focusedField === "password" ? (
-                <button
-                  type="button"
-                  className="mt-2 text-sm text-brand-blue"
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => setForm((current) => ({ ...current, password: suggestedPatientPassword }))}
-                >
-                  Suggestion: use demo password `{suggestedPatientPassword}`
-                </button>
-              ) : null}
               {status.fieldErrors.password ? (
                 <p className="mt-2 text-sm text-red-600">{status.fieldErrors.password}</p>
               ) : null}
             </div>
-            <div className="sm:col-span-2">
+            <div className="sm:col-span-2 md:col-span-2">
               <label className="mb-2 block text-sm font-medium text-slate-600">Full name</label>
               <input className="field" name="full_name" value={form.full_name} onChange={handleChange} />
             </div>
-            <div className="sm:col-span-2">
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-600">City</label>
+              <input className="field" name="city" value={form.city} onChange={handleChange} />
+            </div>
+            <div>
               <label className="mb-2 block text-sm font-medium text-slate-600">Phone</label>
               <input className="field" name="phone" value={form.phone} onChange={handleChange} />
               {status.fieldErrors.phone ? (
                 <p className="mt-2 text-sm text-red-600">{status.fieldErrors.phone}</p>
               ) : null}
             </div>
-            <div className="sm:col-span-2">
+            <div className="sm:col-span-2 md:col-span-2">
+              <label className="mb-2 block text-sm font-medium text-slate-600">Emergency contact</label>
+              <input
+                className="field"
+                name="emergency_contact"
+                value={form.emergency_contact}
+                onChange={handleChange}
+              />
+            </div>
+            <div className="sm:col-span-2 md:col-span-2">
               <button type="submit" className="primary-button w-full">
                 {status.loading ? "Signing in..." : "Continue as patient"}
               </button>

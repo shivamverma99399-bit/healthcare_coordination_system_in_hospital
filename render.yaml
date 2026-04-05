@@ -2,7 +2,7 @@ services:
   - type: web
     name: medpulse-backend
     runtime: python
-    rootDir: healthcare_system
+    rootDir: backend
     buildCommand: bash build.sh
     startCommand: bash start.sh
     healthCheckPath: /api/health
@@ -12,18 +12,18 @@ services:
       - key: DJANGO_DEBUG
         value: "0"
       - key: DJANGO_ALLOWED_HOSTS
-        value: localhost,127.0.0.1,healthcare-coordination-system-in.onrender.com
+        value: localhost,127.0.0.1
       - key: DJANGO_CSRF_TRUSTED_ORIGINS
-        value: https://healthcare-coordination-system-in-hospital-3kfrm74g.vercel.app,https://healthcare-coordination-system-in.onrender.com
+        sync: false
       - key: DJANGO_CORS_ALLOWED_ORIGINS
-        value: https://healthcare-coordination-system-in-hospital-3kfrm74g.vercel.app
+        sync: false
       - key: GEMINI_API_KEY
         sync: false
       - key: GEMINI_MODEL
         value: gemini-1.5-flash
+      - key: DJANGO_LOG_LEVEL
+        value: INFO
       - key: RUN_SEED_DATA
-        value: "1"
-      - key: RUN_SEED_DEMO_ACCESS
-        value: "1"
+        value: "0"
       - key: DATABASE_URL
-        value: sqlite:///db.sqlite3
+        sync: false

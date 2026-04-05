@@ -103,6 +103,17 @@ export default function HospitalDetailPage({ session }) {
         message: `Appointment ${response.status}. Token ${response.token_number} with ${selectedDoctor.name} at ${response.time}.`,
         error: "",
       });
+      const refreshedDoctors = await getDoctorsByHospital(
+        hospital.id,
+        hospital.specialization?.[0] || "",
+      );
+      setDoctors(refreshedDoctors);
+      const refreshedDoctor = refreshedDoctors.find((doctor) => doctor.id === selectedDoctor.id) || refreshedDoctors[0] || null;
+      setSelectedDoctor(refreshedDoctor);
+      setBookingForm((current) => ({
+        ...current,
+        time: refreshedDoctor?.time_slots?.[0] || "",
+      }));
     } catch {
       setBookingState({
         loading: false,

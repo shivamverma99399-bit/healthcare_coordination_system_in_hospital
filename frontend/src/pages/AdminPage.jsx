@@ -5,14 +5,16 @@ import ErrorState from "../components/ErrorState";
 import {
   createPatientRecord,
   createTransfer,
+  deleteAdminDocument,
+  downloadDocument,
   getAdminProfile,
   getAdminOverview,
+  uploadAdminRecordDocuments,
   updateAdminProfile,
   updateAppointmentStatus,
   updateHospitalResources,
   updatePatientRecord,
 } from "../services/api";
-import { getAdminRecordUploads, persistAdminRecordUploads } from "../utils/storage";
 
 
 function AnalyticsTile({ label, value }) {
@@ -52,7 +54,6 @@ export default function AdminPage({ session }) {
   const [adminProfile, setAdminProfile] = useState(null);
   const [profileForm, setProfileForm] = useState({ name: "", admin_id: "", hospital: "" });
   const [recordDrafts, setRecordDrafts] = useState({});
-  const [recordUploads, setRecordUploads] = useState(() => getAdminRecordUploads());
   const [pendingRecordFiles, setPendingRecordFiles] = useState({});
   const [recordUploadStatus, setRecordUploadStatus] = useState({});
   const [pageState, setPageState] = useState({ loading: true, error: "" });
@@ -103,7 +104,7 @@ export default function AdminPage({ session }) {
     } catch (error) {
       setPageState({
         loading: false,
-        error: error?.response?.data?.detail || "Admin dashboard could not be loaded right now.",
+        error: error?.message || "Admin dashboard could not be loaded right now.",
       });
     }
   }
@@ -147,7 +148,7 @@ export default function AdminPage({ session }) {
       await loadOverview();
     } catch (error) {
       setActionState({
-        error: error?.response?.data?.detail || "Hospital resources could not be updated.",
+        error: error?.message || "Hospital resources could not be updated.",
         message: "",
       });
     }
@@ -174,7 +175,7 @@ export default function AdminPage({ session }) {
       await loadOverview();
     } catch (error) {
       setActionState({
-        error: error?.response?.data?.detail || "Admin profile could not be updated.",
+        error: error?.message || "Admin profile could not be updated.",
         message: "",
       });
     } finally {
@@ -201,7 +202,7 @@ export default function AdminPage({ session }) {
       await loadOverview();
     } catch (error) {
       setActionState({
-        error: error?.response?.data?.detail || "Patient record could not be updated.",
+        error: error?.message || "Patient record could not be updated.",
         message: "",
       });
     }
@@ -229,21 +230,52 @@ export default function AdminPage({ session }) {
     }
 
     try {
-      const nextUploads = await persistAdminRecordUploads(recordId, files);
-      setRecordUploads(nextUploads);
+      await uploadAdminRecordDocuments(recordId, files);
       setPendingRecordFiles((current) => ({
         ...current,
         [recordId]: [],
       }));
       setRecordUploadStatus((current) => ({
         ...current,
-        [recordId]: `${files.length} PDF file${files.length > 1 ? "s" : ""} uploaded and shared with the patient dashboard.`,
+        [recordId]: `${files.length} PDF file${files.length > 1 ? "s" : ""} uploaded successfully.`,
       }));
+      await loadOverview();
     } catch (error) {
       setRecordUploadStatus((current) => ({
         ...current,
         [recordId]: error?.message || "Files could not be uploaded right now.",
       }));
+    }
+  }
+
+  async function handleViewDocument(documentId) {
+    try {
+      const blob = await downloadDocument(documentId);
+      const blobUrl = URL.createObjectURL(blob);
+      const openedWindow = window.open(blobUrl, "_blank");
+      if (!openedWindow) {
+        URL.revokeObjectURL(blobUrl);
+        throw new Error("Browser blocked the PDF tab. Allow pop-ups for this site and try again.");
+      }
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+    } catch (error) {
+      setActionState({
+        error: error?.message || "Document preview could not be opened.",
+        message: "",
+      });
+    }
+  }
+
+  async function handleDeleteDocument(documentId) {
+    try {
+      await deleteAdminDocument(documentId);
+      setActionState({ error: "", message: "Document deleted." });
+      await loadOverview();
+    } catch (error) {
+      setActionState({
+        error: error?.message || "Document could not be deleted.",
+        message: "",
+      });
     }
   }
 
@@ -282,7 +314,7 @@ export default function AdminPage({ session }) {
       await loadOverview();
     } catch (error) {
       setActionState({
-        error: error?.response?.data?.detail || "Patient record could not be created.",
+        error: error?.message || "Patient record could not be created.",
         message: "",
       });
     }
@@ -309,7 +341,7 @@ export default function AdminPage({ session }) {
       await loadOverview();
     } catch (error) {
       setActionState({
-        error: error?.response?.data?.detail || "Transfer report could not be shared.",
+        error: error?.message || "Transfer report could not be shared.",
         message: "",
       });
     }
@@ -328,7 +360,7 @@ export default function AdminPage({ session }) {
       await loadOverview();
     } catch (error) {
       setActionState({
-        error: error?.response?.data?.detail || "Appointment status could not be updated.",
+        error: error?.message || "Appointment status could not be updated.",
         message: "",
       });
     } finally {
@@ -608,12 +640,29 @@ export default function AdminPage({ session }) {
                         <p className="mt-3 text-sm text-brand-blue">{recordUploadStatus[record.id]}</p>
                       ) : null}
                       <div className="mt-4 space-y-3">
-                        {(recordUploads[record.id] || []).length ? (
-                          recordUploads[record.id].map((file) => (
+                        {(record.documents || []).length ? (
+                          record.documents.map((file) => (
                             <div key={file.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
                               <div className="flex flex-wrap items-center justify-between gap-3">
-                                <p className="font-medium text-slate-800">{file.name}</p>
-                                <span className="chip">{formatFileSize(file.size)}</span>
+                                <button
+                                  type="button"
+                                  className="font-medium text-brand-blue underline-offset-2 hover:underline"
+                                  onClick={() => handleViewDocument(file.id)}
+                                >
+                                  {file.name}
+                                </button>
+                                <div className="flex items-center gap-3">
+                                  <span className="chip">{formatFileSize(file.size)}</span>
+                                  {file.can_delete ? (
+                                    <button
+                                      type="button"
+                                      className="text-sm font-medium text-red-600 hover:text-red-700"
+                                      onClick={() => handleDeleteDocument(file.id)}
+                                    >
+                                      Delete
+                                    </button>
+                                  ) : null}
+                                </div>
                               </div>
                               <p className="mt-2 text-sm text-slate-500">
                                 {file.type} | uploaded {new Date(file.uploaded_at).toLocaleString()}

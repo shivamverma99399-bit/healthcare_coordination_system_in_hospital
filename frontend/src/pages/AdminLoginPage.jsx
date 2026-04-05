@@ -1,19 +1,14 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { useNavigate } from "react-router-dom";
 
-import DemoLoginSuggestion from "../components/DemoLoginSuggestion";
-import {
-  buildDemoAdminSession,
-  DEMO_HOSPITALS,
-  validateDemoAdminLogin,
-} from "../utils/demoAuth";
+import { loginPortal } from "../services/api";
 import { persistSession } from "../utils/storage";
 
 
 export default function AdminLoginPage({ session, onSessionChange }) {
   const navigate = useNavigate();
-  const [focusedField, setFocusedField] = useState("");
-  const [form, setForm] = useState({ email: "", password: "", name: "", hospital: "" });
+  const [form, setForm] = useState({ email: "", password: "" });
   const [status, setStatus] = useState({ loading: false, error: "", fieldErrors: {} });
 
   useEffect(() => {
@@ -35,45 +30,47 @@ export default function AdminLoginPage({ session, onSessionChange }) {
     }));
   }
 
-  function handleSubmit(event) {
+  function validateForm() {
+    const fieldErrors = {};
+    const email = String(form.email || "").trim();
+    const password = String(form.password || "");
+
+    if (!email.includes("@") || !email.includes(".")) {
+      fieldErrors.email = "Enter a valid email address.";
+    }
+    if (!password.trim()) {
+      fieldErrors.password = "Password is required.";
+    }
+
+    return fieldErrors;
+  }
+
+  async function handleSubmit(event) {
     event.preventDefault();
-    const fieldErrors = validateDemoAdminLogin(form);
+    const fieldErrors = validateForm();
     if (Object.keys(fieldErrors).length) {
       setStatus({ loading: false, error: "", fieldErrors });
       return;
     }
 
     setStatus({ loading: true, error: "", fieldErrors: {} });
-    const sessionData = buildDemoAdminSession(form);
-    persistSession(sessionData);
-    onSessionChange(sessionData);
-    navigate("/hospital-admin/portal");
+    try {
+      const sessionData = await loginPortal({
+        role: "hospital_admin",
+        email: form.email,
+        password: form.password,
+      });
+      persistSession(sessionData);
+      onSessionChange(sessionData);
+      navigate("/hospital-admin/portal");
+    } catch (error) {
+      setStatus({
+        loading: false,
+        error: error?.message || "Hospital admin login failed. Please check your credentials.",
+        fieldErrors: {},
+      });
+    }
   }
-
-  function useDemo() {
-    setForm({
-      email: "admin@medpulse.local",
-      password: "admin123",
-      name: "Admin 1",
-      hospital: String(DEMO_HOSPITALS[0].id),
-    });
-  }
-
-  function handleDemoLogin() {
-    const sessionData = buildDemoAdminSession({
-      email: "admin@medpulse.local",
-      password: "admin123",
-      name: "Admin 1",
-      hospital: String(DEMO_HOSPITALS[0].id),
-    });
-    setStatus({ loading: true, error: "", fieldErrors: {} });
-    persistSession(sessionData);
-    onSessionChange(sessionData);
-    navigate("/hospital-admin/portal");
-  }
-
-  const suggestedAdminEmail = "admin@medpulse.local";
-  const suggestedAdminPassword = "admin123";
 
   return (
     <div className="section-shell pb-16 pt-10">
@@ -84,36 +81,25 @@ export default function AdminLoginPage({ session, onSessionChange }) {
             Manage resources and inter-hospital coordination
           </h1>
           <p className="mt-4 text-base leading-7 text-slate-600">
-            Admin access unlocks live resource controls, SOS inbox, patient-record updates,
-            analytics, and report sharing with receiving hospitals.
+            Admin access unlocks live resource controls, SOS review, patient-record updates,
+            PDF sharing, analytics, and inter-hospital coordination.
           </p>
-          <div className="mt-6 space-y-4">
-            <DemoLoginSuggestion
-              title="Demo admin login"
-              description="Use instant frontend-only demo access with hospital selection."
-              email={suggestedAdminEmail}
-              password={suggestedAdminPassword}
-              actions={[
-                { label: "Use demo details", variant: "secondary", onClick: useDemo },
-                { label: "Login as admin", onClick: handleDemoLogin },
-              ]}
-            />
+          <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+            New hospitals can create an admin account from the frontend. Existing admins can sign
+            in here and continue with token-backed hospital scope.
+          </div>
+          <div className="mt-5 rounded-[24px] border border-emerald-100 bg-emerald-50/70 p-5">
+            <p className="text-sm font-semibold text-emerald-800">Need a new admin account?</p>
+            <p className="mt-2 text-sm leading-6 text-emerald-900/80">
+              Create the hospital admin first, then use this same login form anytime afterward.
+            </p>
+            <Link to="/register/admin" className="primary-button mt-4">
+              Create hospital admin
+            </Link>
           </div>
         </section>
 
         <section className="glass-panel p-6">
-          <div className="mb-5">
-            <DemoLoginSuggestion
-              title="Suggested demo admin login"
-              description="Fill the fields or use one-click demo login. Backend authentication is bypassed."
-              email={suggestedAdminEmail}
-              password={suggestedAdminPassword}
-              actions={[
-                { label: "Fill demo credentials", variant: "secondary", onClick: useDemo },
-                { label: "Quick demo login", onClick: handleDemoLogin },
-              ]}
-            />
-          </div>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label className="mb-2 block text-sm font-medium text-slate-600">Admin email</label>
@@ -123,19 +109,8 @@ export default function AdminLoginPage({ session, onSessionChange }) {
                 name="email"
                 value={form.email}
                 onChange={handleChange}
-                onFocus={() => setFocusedField("email")}
                 required
               />
-              {focusedField === "email" ? (
-                <button
-                  type="button"
-                  className="mt-2 text-sm text-brand-blue"
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => setForm((current) => ({ ...current, email: suggestedAdminEmail }))}
-                >
-                  Suggestion: use demo email `{suggestedAdminEmail}`
-                </button>
-              ) : null}
               {status.fieldErrors.email ? (
                 <p className="mt-2 text-sm text-red-600">{status.fieldErrors.email}</p>
               ) : null}
@@ -148,45 +123,10 @@ export default function AdminLoginPage({ session, onSessionChange }) {
                 name="password"
                 value={form.password}
                 onChange={handleChange}
-                onFocus={() => setFocusedField("password")}
                 required
               />
-              {focusedField === "password" ? (
-                <button
-                  type="button"
-                  className="mt-2 text-sm text-brand-blue"
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => setForm((current) => ({ ...current, password: suggestedAdminPassword }))}
-                >
-                  Suggestion: use demo password `{suggestedAdminPassword}`
-                </button>
-              ) : null}
               {status.fieldErrors.password ? (
                 <p className="mt-2 text-sm text-red-600">{status.fieldErrors.password}</p>
-              ) : null}
-            </div>
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-600">Admin name</label>
-              <input
-                className="field"
-                name="name"
-                value={form.name}
-                onChange={handleChange}
-                placeholder="Admin name"
-              />
-            </div>
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-600">Hospital</label>
-              <select className="field" name="hospital" value={form.hospital} onChange={handleChange} required>
-                <option value="">Select hospital</option>
-                {DEMO_HOSPITALS.map((hospital) => (
-                  <option key={hospital.id} value={hospital.id}>
-                    {hospital.name}
-                  </option>
-                ))}
-              </select>
-              {status.fieldErrors.hospital ? (
-                <p className="mt-2 text-sm text-red-600">{status.fieldErrors.hospital}</p>
               ) : null}
             </div>
             <button type="submit" className="primary-button w-full">

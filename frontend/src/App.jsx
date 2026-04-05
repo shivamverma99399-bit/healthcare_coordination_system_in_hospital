@@ -1,8 +1,9 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import AdminPage from "./pages/AdminPage";
+import AdminRegisterPage from "./pages/AdminRegisterPage";
 import DashboardPage from "./pages/DashboardPage";
 import HomePage from "./pages/HomePage";
 import HospitalDetailPage from "./pages/HospitalDetailPage";
@@ -10,8 +11,8 @@ import HospitalListingPage from "./pages/HospitalListingPage";
 import AdminLoginPage from "./pages/AdminLoginPage";
 import NotFoundPage from "./pages/NotFoundPage";
 import PatientLoginPage from "./pages/PatientLoginPage";
-import { logoutPortal } from "./services/api";
-import { clearSession, getSession } from "./utils/storage";
+import { getActiveSession, logoutPortal } from "./services/api";
+import { clearSession, getSession, persistSession } from "./utils/storage";
 
 
 function navigationForSession(session) {
@@ -31,11 +32,20 @@ function navigationForSession(session) {
     { to: "/", label: "Platform" },
     { to: "/login/patient", label: "Patient Login" },
     { to: "/login/admin", label: "Admin Login" },
+    { to: "/register/admin", label: "Create Admin" },
   ];
 }
 
 
-function RequireRole({ session, role, children }) {
+function RequireRole({ session, role, loading, children }) {
+  if (loading) {
+    return (
+      <div className="section-shell py-16">
+        <div className="glass-panel p-8 text-center text-slate-500">Restoring secure session...</div>
+      </div>
+    );
+  }
+
   if (session?.role !== role) {
     return <Navigate to={role === "patient" ? "/login/patient" : "/login/admin"} replace />;
   }
@@ -98,6 +108,41 @@ export default function App() {
   const location = useLocation();
   const navigate = useNavigate();
   const [session, setSession] = useState(() => getSession());
+  const [authLoading, setAuthLoading] = useState(() => Boolean(getSession()?.token));
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function hydrateSession() {
+      const storedSession = getSession();
+      if (!storedSession?.token) {
+        setAuthLoading(false);
+        return;
+      }
+
+      try {
+        const activeSession = await getActiveSession();
+        persistSession(activeSession);
+        if (!cancelled) {
+          setSession(activeSession);
+        }
+      } catch {
+        clearSession();
+        if (!cancelled) {
+          setSession(null);
+        }
+      } finally {
+        if (!cancelled) {
+          setAuthLoading(false);
+        }
+      }
+    }
+
+    hydrateSession();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function handleLogout() {
     try {
@@ -131,9 +176,13 @@ export default function App() {
               element={<AdminLoginPage session={session} onSessionChange={setSession} />}
             />
             <Route
+              path="/register/admin"
+              element={<AdminRegisterPage session={session} onSessionChange={setSession} />}
+            />
+            <Route
               path="/patient/intake"
               element={
-                <RequireRole session={session} role="patient">
+                <RequireRole session={session} role="patient" loading={authLoading}>
                   <HomePage session={session} patientMode />
                 </RequireRole>
               }
@@ -141,7 +190,7 @@ export default function App() {
             <Route
               path="/patient/hospitals"
               element={
-                <RequireRole session={session} role="patient">
+                <RequireRole session={session} role="patient" loading={authLoading}>
                   <HospitalListingPage session={session} />
                 </RequireRole>
               }
@@ -149,7 +198,7 @@ export default function App() {
             <Route
               path="/patient/hospitals/:hospitalId"
               element={
-                <RequireRole session={session} role="patient">
+                <RequireRole session={session} role="patient" loading={authLoading}>
                   <HospitalDetailPage session={session} />
                 </RequireRole>
               }
@@ -157,7 +206,7 @@ export default function App() {
             <Route
               path="/patient/dashboard"
               element={
-                <RequireRole session={session} role="patient">
+                <RequireRole session={session} role="patient" loading={authLoading}>
                   <DashboardPage session={session} />
                 </RequireRole>
               }
@@ -165,7 +214,7 @@ export default function App() {
             <Route
               path="/hospital-admin/portal"
               element={
-                <RequireRole session={session} role="hospital_admin">
+                <RequireRole session={session} role="hospital_admin" loading={authLoading}>
                   <AdminPage session={session} />
                 </RequireRole>
               }

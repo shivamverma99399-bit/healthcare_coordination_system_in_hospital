@@ -5,16 +5,14 @@ import ErrorState from "../components/ErrorState";
 import {
   cancelPatientAppointment,
   createPatientSosAlert,
+  deletePatientDocument,
+  deletePatientSosAlert,
   deletePatientRecord,
+  downloadDocument,
   getPatientDashboard,
+  uploadPatientDocuments,
 } from "../services/api";
-import {
-  getPatientUploads,
-  getSavedHospitals,
-  persistPatientUploads,
-  removePatientAlert,
-  removePatientUpload,
-} from "../utils/storage";
+import { getSavedHospitals } from "../utils/storage";
 
 
 function StatTile({ label, value }) {
@@ -38,33 +36,15 @@ function formatFileSize(size) {
 }
 
 
-function createPdfBlobUrl(file) {
-  if (!file?.data) {
-    throw new Error("This PDF is missing its preview data. Please upload it again.");
-  }
-
-  const [header, base64] = String(file.data).split(",", 2);
-  if (!header?.startsWith("data:application/pdf") || !base64) {
-    throw new Error("This file is not a valid PDF preview. Please upload it again.");
-  }
-
-  const mimeType = header.slice(5, header.indexOf(";")) || "application/pdf";
-  const binary = window.atob(base64);
-  const bytes = new Uint8Array(binary.length);
-
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-
-  const blob = new Blob([bytes], { type: mimeType });
-  return URL.createObjectURL(blob);
-}
-
-
 export default function DashboardPage({ session }) {
-  const [dashboard, setDashboard] = useState({ profile: {}, stats: {}, history: [], alerts: [] });
+  const [dashboard, setDashboard] = useState({
+    profile: {},
+    stats: {},
+    history: [],
+    alerts: [],
+    documents: [],
+  });
   const [savedHospitals, setSavedHospitals] = useState([]);
-  const [patientUploads, setPatientUploads] = useState(() => getPatientUploads());
   const [pendingFiles, setPendingFiles] = useState([]);
   const [uploadStatus, setUploadStatus] = useState("");
   const [pageState, setPageState] = useState({ loading: true, error: "" });
@@ -87,7 +67,7 @@ export default function DashboardPage({ session }) {
     } catch (error) {
       setPageState({
         loading: false,
-        error: error?.response?.data?.detail || "Patient dashboard could not be loaded right now.",
+        error: error?.message || "Patient dashboard could not be loaded right now.",
       });
     }
   }
@@ -95,7 +75,6 @@ export default function DashboardPage({ session }) {
   useEffect(() => {
     loadDashboard();
     setSavedHospitals(getSavedHospitals());
-    setPatientUploads(getPatientUploads());
   }, []);
 
   function handleSosChange(event) {
@@ -115,21 +94,21 @@ export default function DashboardPage({ session }) {
     } catch (error) {
       setSosState({
         loading: false,
-        error: error?.response?.data?.detail || "SOS escalation could not be submitted.",
+        error: error?.message || "SOS escalation could not be submitted.",
       });
     }
   }
 
-  function handleDeleteSosUpdate(alertId) {
-    const nextAlerts = removePatientAlert(alertId);
-    setDashboard((current) => ({
-      ...current,
-      alerts: current.alerts.filter((alert) => alert.id !== alertId),
-      stats: {
-        ...current.stats,
-        active_alerts: nextAlerts.filter((alert) => alert.status === "active").length,
-      },
-    }));
+  async function handleDeleteSosUpdate(alertId) {
+    try {
+      await deletePatientSosAlert(alertId);
+      await loadDashboard();
+    } catch (error) {
+      setSosState({
+        loading: false,
+        error: error?.message || "SOS update could not be deleted.",
+      });
+    }
   }
 
   function handleFileSelection(event) {
@@ -144,18 +123,19 @@ export default function DashboardPage({ session }) {
     }
 
     try {
-      const nextUploads = await persistPatientUploads(pendingFiles);
-      setPatientUploads(nextUploads);
+      await uploadPatientDocuments(pendingFiles);
       setPendingFiles([]);
       setUploadStatus(`${pendingFiles.length} PDF file${pendingFiles.length > 1 ? "s" : ""} uploaded successfully.`);
+      await loadDashboard();
     } catch (error) {
-      setUploadStatus(error?.message || "PDF upload failed. Please try again.");
+      setUploadStatus(error?.message || "PDF upload failed.");
     }
   }
 
-  function handleViewFile(file) {
+  async function handleViewFile(file) {
     try {
-      const blobUrl = createPdfBlobUrl(file);
+      const blob = await downloadDocument(file.id);
+      const blobUrl = URL.createObjectURL(blob);
       const openedWindow = window.open(blobUrl, "_blank");
       if (!openedWindow) {
         URL.revokeObjectURL(blobUrl);
@@ -168,10 +148,14 @@ export default function DashboardPage({ session }) {
     }
   }
 
-  function handleDeleteFile(uploadId) {
-    const nextUploads = removePatientUpload(uploadId);
-    setPatientUploads(nextUploads);
-    setUploadStatus("PDF removed successfully.");
+  async function handleDeleteFile(uploadId) {
+    try {
+      await deletePatientDocument(uploadId);
+      setUploadStatus("PDF removed successfully.");
+      await loadDashboard();
+    } catch (error) {
+      setUploadStatus(error?.message || "PDF could not be removed.");
+    }
   }
 
   async function handleCancelAppointment(bookingId) {
@@ -183,7 +167,7 @@ export default function DashboardPage({ session }) {
     } catch (error) {
       setRecordActionState({
         loadingId: null,
-        error: error?.response?.data?.detail || "Appointment could not be cancelled.",
+        error: error?.message || "Appointment could not be cancelled.",
       });
     }
   }
@@ -197,7 +181,7 @@ export default function DashboardPage({ session }) {
     } catch (error) {
       setRecordActionState({
         loadingId: null,
-        error: error?.response?.data?.detail || "Record could not be deleted.",
+        error: error?.message || "Record could not be deleted.",
       });
     }
   }
@@ -308,7 +292,7 @@ export default function DashboardPage({ session }) {
             <div>
               <h2 className="font-display text-2xl font-bold tracking-tight">Medical Files Upload</h2>
               <p className="mt-2 text-sm text-slate-500">
-                Upload PDF reports, prescriptions, scans, and discharge documents from your device.
+                Upload PDF reports, prescriptions, scans, and discharge documents to the backend.
               </p>
             </div>
             <button type="button" className="secondary-button" onClick={handleFileUpload}>
@@ -318,8 +302,8 @@ export default function DashboardPage({ session }) {
           <input className="field mt-5 py-3" type="file" accept="application/pdf" multiple onChange={handleFileSelection} />
           {uploadStatus ? <p className="mt-3 text-sm text-brand-blue">{uploadStatus}</p> : null}
           <div className="mt-5 grid gap-4 md:grid-cols-2">
-            {patientUploads.length ? (
-              patientUploads.map((file) => (
+            {dashboard.documents.length ? (
+              dashboard.documents.map((file) => (
                 <div key={file.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <button
@@ -331,14 +315,16 @@ export default function DashboardPage({ session }) {
                     </button>
                     <div className="flex items-center gap-3">
                       <span className="chip">{formatFileSize(file.size)}</span>
-                      <button
-                        type="button"
-                        className="text-sm font-medium text-red-600 hover:text-red-700"
-                        onClick={() => handleDeleteFile(file.id)}
-                        aria-label={`Delete ${file.name}`}
-                      >
-                        Delete
-                      </button>
+                      {file.can_delete ? (
+                        <button
+                          type="button"
+                          className="text-sm font-medium text-red-600 hover:text-red-700"
+                          onClick={() => handleDeleteFile(file.id)}
+                          aria-label={`Delete ${file.name}`}
+                        >
+                          Delete
+                        </button>
+                      ) : null}
                     </div>
                   </div>
                   <p className="mt-2 text-sm text-slate-500">

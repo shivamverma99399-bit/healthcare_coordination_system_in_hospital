@@ -1,513 +1,392 @@
-import axios from "axios";
-
-import { API_BASE_URL } from "../config/api";
-import { fallbackDoctors, fallbackHospitals } from "../data/fallbackData";
-import {
-  getAdminTransfers as getLocalAdminTransfers,
-  getPatientAlerts,
-  getPatientBookings,
-  getSavedHospitals,
-  getSession,
-  persistAdminTransfer,
-  persistPatientAlert,
-  persistPatientBooking,
-  persistSession,
-  removePatientBooking,
-  updatePatientBooking,
-} from "../utils/storage";
+import { buildApiUrl } from "../config/api";
+import { clearSession, getSession, persistSession } from "../utils/storage";
 
 
-const api = axios.create({
-  baseURL: API_BASE_URL,
-  timeout: 8000,
-});
-
-function authConfig(config = {}) {
-  const token = getSession()?.token;
-  return token
-    ? {
-        ...config,
-        headers: {
-          ...(config.headers || {}),
-          Authorization: `Token ${token}`,
-        },
-      }
-    : config;
+class ApiError extends Error {
+  constructor(message, options = {}) {
+    super(message);
+    this.name = "ApiError";
+    this.status = options.status;
+    this.payload = options.payload;
+    this.url = options.url;
+  }
 }
 
 
-function fallbackRecommendationList(params = {}) {
-  const maxDistance = Number(params.distance || 0);
-  const specialization = String(params.specialization || "").trim().toLowerCase();
-  const requireIcu = String(params.icu || "").toLowerCase() === "true" || params.icu === true;
-
-  return fallbackHospitals
-    .map((hospital) => ({
-      ...hospital,
-      score_breakdown: {
-        distance: 24,
-        capacity: 22,
-        specialist_match: 18,
-        urgency: 16,
-        emergency: hospital.emergency_available ? 8 : 0,
-      },
-      care_pathway: hospital.emergency_available ? "Immediate emergency route" : "Routine coordinated care route",
-      next_steps: [
-        "Review doctor availability.",
-        "Confirm appointment or use SOS escalation.",
-      ],
-    }))
-    .filter((hospital) => {
-      if (maxDistance && hospital.distance > maxDistance) {
-        return false;
+function buildUrl(path, params) {
+  const url = new URL(buildApiUrl(path));
+  if (params) {
+    Object.entries(params).forEach(([key, value]) => {
+      if (value === undefined || value === null || value === "") {
+        return;
       }
-
-      if (requireIcu && hospital.icu_available <= 0) {
-        return false;
-      }
-
-      if (specialization) {
-        const normalizedSpecializations = hospital.specialization.map((item) => String(item).toLowerCase());
-        const normalizedRequested = specialization
-          .replace("cardio", "cardiologist")
-          .replace("general", "general_physician")
-          .replace("neuro", "neurologist")
-          .replace("pulmo", "pulmonologist")
-          .replace("ortho", "orthopedic")
-          .replace("derma", "dermatologist");
-
-        if (!normalizedSpecializations.includes(normalizedRequested)) {
-          return false;
-        }
-      }
-
-      return true;
-    })
-    .sort((left, right) => right.ai_score - left.ai_score || left.distance - right.distance);
+      url.searchParams.set(key, String(value));
+    });
+  }
+  return url.toString();
 }
 
 
-function shouldUsePatientDemoFallback(error) {
-  const status = error?.response?.status;
-  const token = getSession()?.token || "";
-  return token.startsWith("demo-patient-") || status === 401 || status === 403 || !status;
+function getErrorMessage(payload, fallbackMessage) {
+  if (!payload) {
+    return fallbackMessage;
+  }
+
+  if (typeof payload === "string" && payload.trim()) {
+    return payload;
+  }
+
+  if (typeof payload.detail === "string" && payload.detail.trim()) {
+    return payload.detail;
+  }
+
+  if (typeof payload.message === "string" && payload.message.trim()) {
+    return payload.message;
+  }
+
+  const firstFieldError = Object.values(payload).find((value) => Array.isArray(value) && value[0]);
+  if (firstFieldError) {
+    return String(firstFieldError[0]);
+  }
+
+  return fallbackMessage;
 }
 
 
-function buildFallbackPatientDashboard() {
+async function parsePayload(response, responseType) {
+  if (responseType === "blob") {
+    return response.blob();
+  }
+
+  if (response.status === 204) {
+    return null;
+  }
+
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    return response.json();
+  }
+
+  return response.text();
+}
+
+
+async function request(path, options = {}, fallbackMessage = "Request failed.") {
+  const {
+    method = "GET",
+    body,
+    params,
+    headers = {},
+    auth = true,
+    responseType = "json",
+  } = options;
+
+  const requestHeaders = new Headers({
+    Accept: responseType === "blob" ? "application/pdf" : "application/json",
+    ...headers,
+  });
+
+  const token = auth ? getSession()?.token : null;
+  if (token) {
+    requestHeaders.set("Authorization", `Token ${token}`);
+  }
+
+  const init = {
+    method,
+    headers: requestHeaders,
+  };
+
+  if (body !== undefined && body !== null) {
+    if (body instanceof FormData) {
+      init.body = body;
+      requestHeaders.delete("Content-Type");
+    } else {
+      requestHeaders.set("Content-Type", "application/json");
+      init.body = JSON.stringify(body);
+    }
+  }
+
+  const url = buildUrl(path, params);
+  const response = await fetch(url, init);
+  const payload = await parsePayload(response, responseType);
+
+  if (!response.ok) {
+    if (auth && response.status === 401) {
+      clearSession();
+    }
+
+    throw new ApiError(getErrorMessage(payload, fallbackMessage), {
+      status: response.status,
+      payload,
+      url,
+    });
+  }
+
+  return payload;
+}
+
+
+function buildPdfFormData(files) {
+  const formData = new FormData();
+  Array.from(files || []).forEach((file) => {
+    formData.append("files", file);
+  });
+  return formData;
+}
+
+
+function persistUpdatedAdminSession(profile) {
   const session = getSession();
-  const savedHospitals = getSavedHospitals();
-  const history = getPatientBookings();
-  const alerts = getPatientAlerts();
+  if (!session) {
+    return;
+  }
 
-  return {
+  persistSession({
+    ...session,
+    display_name: profile.name || session.display_name,
     profile: {
-      full_name: session?.profile?.full_name || session?.display_name || "Demo Patient",
-      city: session?.profile?.city || "Delhi",
-      phone: session?.profile?.phone || "9999999999",
-      emergency_contact: session?.profile?.emergency_contact || "Demo Emergency Contact",
+      ...session.profile,
+      name: profile.name || session.profile?.name,
+      admin_id: profile.admin_id || session.profile?.admin_id,
+      title: profile.title || session.profile?.title,
+      hospital: profile.hospital || session.profile?.hospital,
     },
-    stats: {
-      appointments: history.length,
-      active_alerts: alerts.filter((item) => item.status === "active").length,
-      network_hospitals: fallbackHospitals.length,
-      emergency_ready: fallbackHospitals.filter((item) => item.emergency_available).length,
-    },
-    history,
-    alerts,
-    saved_hospitals: savedHospitals,
-  };
-}
-
-
-function shouldUseAdminDemoFallback(error) {
-  const status = error?.response?.status;
-  const token = getSession()?.token || "";
-  return token.startsWith("demo-admin-") || status === 401 || status === 403 || !status;
-}
-
-
-function buildFallbackAdminOverview() {
-  const session = getSession();
-  const localTransfers = getLocalAdminTransfers();
-  const localHistory = getPatientBookings();
-  const managedHospital = {
-    id: session?.profile?.hospital?.id || 1,
-    name: session?.profile?.hospital?.name || "Demo Hospital",
-    location: session?.profile?.hospital?.location || "Delhi",
-    available_beds: 18,
-    available_icu: 4,
-    total_beds: 100,
-    total_icu: 20,
-    emergency_available: true,
-    avg_wait_time: 15,
-    opd_load: 3,
-  };
-
-  return {
-    profile: {
-      name: session?.display_name || "Admin 1",
-      admin_id: "ADM-DEMO",
-      title: session?.profile?.title || "Hospital Operations Admin",
-      hospital: session?.profile?.hospital || {
-        id: managedHospital.id,
-        name: managedHospital.name,
-        location: managedHospital.location,
-      },
-    },
-    managed_hospital: managedHospital,
-    network_hospitals: fallbackHospitals.slice(0, 4).map((hospital) => ({
-      id: hospital.id,
-      name: hospital.hospital_name,
-      location: hospital.location,
-      available_beds: hospital.beds_available,
-      available_icu: hospital.icu_available,
-      total_beds: hospital.beds_available + 20,
-      total_icu: hospital.icu_available + 4,
-      emergency_available: hospital.emergency_available,
-      avg_wait_time: 18,
-      opd_load: 4,
-    })),
-    analytics: {
-      active_records: localHistory.length,
-      appointments: localHistory.length,
-      active_sos_alerts: 0,
-      outbound_transfers: localTransfers.length,
-      inbound_transfers: 0,
-    },
-    appointments: localHistory,
-    patient_records: localHistory,
-    patient_options: localHistory.map((item) => ({
-      id: item.id,
-      full_name: item.patient_name,
-      phone: "",
-      city: "",
-    })),
-    alerts: [],
-    transfers: {
-      outbound: localTransfers,
-      inbound: [],
-    },
-  };
-}
-
-
-export async function getDemoAccounts() {
-  const { data } = await api.get("auth/demo-accounts");
-  return data.accounts || [];
+  });
 }
 
 
 export async function loginPortal(payload) {
-  const { data } = await api.post("auth/login", payload);
-  return data;
+  return request("auth/login", { method: "POST", auth: false, body: payload }, "Unable to log in.");
+}
+
+
+export async function registerHospitalAdmin(payload) {
+  return request(
+    "auth/admin-register",
+    { method: "POST", auth: false, body: payload },
+    "Unable to create the hospital admin account.",
+  );
 }
 
 
 export async function getActiveSession() {
-  const { data } = await api.get("auth/session", authConfig());
-  return data;
+  return request("auth/session", {}, "Unable to load the active session.");
 }
 
 
 export async function logoutPortal() {
-  const { data } = await api.post("auth/logout", {}, authConfig());
-  return data;
+  return request("auth/logout", { method: "POST", body: {} }, "Unable to log out.");
 }
 
 
 export async function analyzeSymptoms(payload) {
-  const { data } = await api.post("analyze-symptoms", payload, authConfig());
-  return data;
+  return request("analyze-symptoms", { method: "POST", body: payload }, "Unable to analyze symptoms.");
 }
 
 
 export async function getHospitalRecommendations(params) {
-  try {
-    const { data } = await api.get("hospitals/recommendations", authConfig({ params }));
-    return data;
-  } catch {
-    return fallbackRecommendationList(params);
-  }
+  return request(
+    "hospitals/recommendations",
+    { params },
+    "Unable to load hospital recommendations.",
+  );
 }
 
 
 export async function getDoctorsByHospital(hospitalId, specialization) {
-  try {
-    const { data } = await api.get("doctors/by-hospital", authConfig({
-      params: { id: hospitalId, specialization },
-    }));
-    return data;
-  } catch {
-    return fallbackDoctors[hospitalId] || [];
-  }
+  return request(
+    "doctors/by-hospital",
+    {
+      params: {
+        id: hospitalId,
+        specialization,
+      },
+    },
+    "Unable to load doctors.",
+  );
 }
 
 
 export async function bookAppointment(payload) {
-  try {
-    const { data } = await api.post("book-appointment", payload, authConfig());
-    persistPatientBooking({
-      id: data.booking_id,
-      patient_name: payload.patient_name,
-      hospital_name: data.hospital_name,
-      doctor_name: data.doctor_name,
-      urgency: payload.urgency,
-      status: data.booking_status || "pending",
-      ai_summary: payload.ai_summary,
-      symptoms: payload.symptoms,
-      next_steps: payload.next_steps,
-    });
-    return data;
-  } catch (error) {
-    if (!shouldUsePatientDemoFallback(error)) {
-      throw error;
-    }
-
-    const bookingId = Date.now();
-    persistPatientBooking({
-      id: bookingId,
-      patient_name: payload.patient_name,
-      hospital_name: payload.hospital_name || "Demo hospital",
-      doctor_name: payload.doctor_name || "Demo doctor",
-      urgency: payload.urgency,
-      status: "pending",
-      ai_summary: payload.ai_summary,
-      symptoms: payload.symptoms,
-      next_steps: payload.next_steps,
-    });
-
-    return {
-      status: "confirmed",
-      booking_id: bookingId,
-      doctor_name: payload.doctor_name || "Demo doctor",
-      hospital_name: payload.hospital_name || "Demo hospital",
-      time: payload.time,
-      token_number: Math.floor((bookingId / 1000) % 1000),
-    };
-  }
+  return request("book-appointment", { method: "POST", body: payload }, "Unable to book the appointment.");
 }
 
 
 export async function getPatientDashboard() {
-  try {
-    const { data } = await api.get("patient/dashboard", authConfig());
-    return data;
-  } catch (error) {
-    if (!shouldUsePatientDemoFallback(error)) {
-      throw error;
-    }
-    return buildFallbackPatientDashboard();
-  }
+  return request("patient/dashboard", {}, "Unable to load the patient dashboard.");
 }
 
 
 export async function createPatientSosAlert(payload) {
-  try {
-    const { data } = await api.post("patient/sos-alerts", payload, authConfig());
-    persistPatientAlert(data);
-    return data;
-  } catch (error) {
-    if (!shouldUsePatientDemoFallback(error)) {
-      throw error;
-    }
+  return request("patient/sos-alerts", { method: "POST", body: payload }, "Unable to create the SOS alert.");
+}
 
-    const alert = {
-      id: Date.now(),
-      hospital_name: "",
-      location_context: payload.location_context,
-      message: payload.message,
-      status: "active",
-      urgency: payload.urgency,
-    };
-    persistPatientAlert(alert);
-    return alert;
-  }
+
+export async function deletePatientSosAlert(alertId) {
+  return request(
+    `patient/sos-alerts/${alertId}`,
+    { method: "DELETE" },
+    "Unable to delete the SOS alert.",
+  );
 }
 
 
 export async function cancelPatientAppointment(bookingId) {
-  try {
-    const { data } = await api.patch(
-      `patient/appointments/${bookingId}/status`,
-      { status: "cancelled" },
-      authConfig(),
-    );
-    updatePatientBooking(bookingId, data);
-    return data;
-  } catch (error) {
-    if (!shouldUsePatientDemoFallback(error)) {
-      throw error;
-    }
-    updatePatientBooking(bookingId, { status: "cancelled" });
-    return { id: bookingId, status: "cancelled" };
-  }
+  return request(
+    `patient/appointments/${bookingId}/status`,
+    {
+      method: "PATCH",
+      body: { status: "cancelled" },
+    },
+    "Unable to cancel the appointment.",
+  );
 }
 
 
 export async function deletePatientRecord(bookingId) {
-  try {
-    await api.delete(`patient/records/${bookingId}`, authConfig());
-    removePatientBooking(bookingId);
-    return { id: bookingId };
-  } catch (error) {
-    if (!shouldUsePatientDemoFallback(error)) {
-      throw error;
-    }
-    removePatientBooking(bookingId);
-    return { id: bookingId };
-  }
+  return request(
+    `patient/records/${bookingId}`,
+    { method: "DELETE" },
+    "Unable to delete the patient record.",
+  );
+}
+
+
+export async function uploadPatientDocuments(files) {
+  return request(
+    "patient/documents",
+    {
+      method: "POST",
+      body: buildPdfFormData(files),
+    },
+    "Unable to upload the PDF document.",
+  );
+}
+
+
+export async function deletePatientDocument(documentId) {
+  return request(
+    `patient/documents/${documentId}`,
+    { method: "DELETE" },
+    "Unable to delete the document.",
+  );
+}
+
+
+export async function downloadDocument(documentId) {
+  return request(
+    `documents/${documentId}/download`,
+    { responseType: "blob" },
+    "Unable to load the document.",
+  );
 }
 
 
 export async function getAdminOverview() {
-  try {
-    const { data } = await api.get("admin/overview", authConfig());
-    return data;
-  } catch (error) {
-    if (!shouldUseAdminDemoFallback(error)) {
-      throw error;
-    }
-    return buildFallbackAdminOverview();
-  }
+  return request("admin/overview", {}, "Unable to load the admin overview.");
 }
 
 
 export async function getAdminProfile() {
-  try {
-    const { data } = await api.get("admin/profile", authConfig());
-    return data;
-  } catch (error) {
-    if (!shouldUseAdminDemoFallback(error)) {
-      throw error;
-    }
-
-    const session = getSession();
-    return {
-      name: session?.display_name || "Admin 1",
-      admin_id: "ADM-DEMO",
-      title: session?.profile?.title || "Hospital Operations Admin",
-      hospital: session?.profile?.hospital || { id: 1, name: "Demo Hospital", location: "Delhi" },
-      hospital_id: session?.profile?.hospital?.id || 1,
-      hospital_name: session?.profile?.hospital?.name || "Demo Hospital",
-    };
-  }
+  return request("admin/profile", {}, "Unable to load the admin profile.");
 }
 
 
 export async function updateAdminProfile(payload) {
-  try {
-    const { data } = await api.put("admin/profile", payload, authConfig());
-    const session = getSession();
-    if (session) {
-      persistSession({
-        ...session,
-        display_name: data.name || session.display_name,
-        profile: {
-          ...session.profile,
-          hospital: data.hospital || session.profile?.hospital,
-        },
-      });
-    }
-    return data;
-  } catch (error) {
-    if (!shouldUseAdminDemoFallback(error)) {
-      throw error;
-    }
-
-    const session = getSession();
-    if (session) {
-      persistSession({
-        ...session,
-        display_name: payload.name || session.display_name,
-        profile: {
-          ...session.profile,
-          hospital: {
-            ...(session.profile?.hospital || {}),
-            id: Number(payload.hospital) || session.profile?.hospital?.id || 1,
-            name: session.profile?.hospital?.name || "Demo Hospital",
-            location: session.profile?.hospital?.location || "Delhi",
-          },
-        },
-      });
-    }
-    return {
-      name: payload.name,
-      admin_id: payload.admin_id,
-      hospital_id: Number(payload.hospital) || 1,
-    };
-  }
+  const data = await request(
+    "admin/profile",
+    {
+      method: "PUT",
+      body: payload,
+    },
+    "Unable to update the admin profile.",
+  );
+  persistUpdatedAdminSession(data);
+  return data;
 }
 
 
 export async function updateHospitalResources(hospitalId, payload) {
-  try {
-    const { data } = await api.patch(`admin/hospitals/${hospitalId}`, payload, authConfig());
-    return data;
-  } catch (error) {
-    if (!shouldUseAdminDemoFallback(error)) {
-      throw error;
-    }
-    return { id: hospitalId, ...payload };
-  }
+  return request(
+    `admin/hospitals/${hospitalId}`,
+    {
+      method: "PATCH",
+      body: payload,
+    },
+    "Unable to update hospital resources.",
+  );
 }
 
 
 export async function updatePatientRecord(recordId, payload) {
-  try {
-    const { data } = await api.patch(`admin/patient-records/${recordId}`, payload, authConfig());
-    return data;
-  } catch (error) {
-    if (!shouldUseAdminDemoFallback(error)) {
-      throw error;
-    }
-    return { id: recordId, ...payload };
-  }
+  return request(
+    `admin/patient-records/${recordId}`,
+    {
+      method: "PATCH",
+      body: payload,
+    },
+    "Unable to update the patient record.",
+  );
 }
 
 
 export async function createPatientRecord(payload) {
-  const { data } = await api.post("admin/patient-records", payload, authConfig());
-  return data;
+  return request(
+    "admin/patient-records",
+    {
+      method: "POST",
+      body: payload,
+    },
+    "Unable to create the patient record.",
+  );
+}
+
+
+export async function uploadAdminRecordDocuments(recordId, files) {
+  return request(
+    `admin/patient-records/${recordId}/documents`,
+    {
+      method: "POST",
+      body: buildPdfFormData(files),
+    },
+    "Unable to upload the patient document.",
+  );
+}
+
+
+export async function deleteAdminDocument(documentId) {
+  return request(
+    `admin/documents/${documentId}`,
+    { method: "DELETE" },
+    "Unable to delete the document.",
+  );
 }
 
 
 export async function updateAppointmentStatus(bookingId, statusValue) {
-  const { data } = await api.patch(
+  return request(
     `admin/appointments/${bookingId}/status`,
-    { status: statusValue },
-    authConfig(),
+    {
+      method: "PATCH",
+      body: { status: statusValue },
+    },
+    "Unable to update the appointment status.",
   );
-  return data;
 }
 
 
 export async function getAdminTransfers() {
-  const { data } = await api.get("admin/transfers", authConfig());
-  return data;
+  return request("admin/transfers", {}, "Unable to load transfer data.");
 }
 
 
 export async function createTransfer(payload) {
-  try {
-    const { data } = await api.post("admin/transfers", payload, authConfig());
-    persistAdminTransfer(data);
-    return data;
-  } catch (error) {
-    if (!shouldUseAdminDemoFallback(error)) {
-      throw error;
-    }
-
-    const session = getSession();
-    const transfer = {
-      id: Date.now(),
-      patient_name: "Demo Patient",
-      source_hospital_name: session?.profile?.hospital?.name || "Demo Hospital",
-      target_hospital_name: `Hospital ${payload.target_hospital_id}`,
-      summary: "Demo transfer report shared successfully.",
-      status: "shared",
-    };
-    persistAdminTransfer(transfer);
-    return transfer;
-  }
+  return request(
+    "admin/transfers",
+    {
+      method: "POST",
+      body: payload,
+    },
+    "Unable to create the transfer.",
+  );
 }

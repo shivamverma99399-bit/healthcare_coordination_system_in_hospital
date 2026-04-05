@@ -1,9 +1,8 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import EmergencyButton from "../components/EmergencyButton";
 import SearchBar from "../components/SearchBar";
-import { getDemoAccounts } from "../services/api";
 
 
 function FlowCard({ title, items, tone = "bg-white/80" }) {
@@ -43,18 +42,11 @@ function AssistantBubble({ role, children }) {
 
 export default function HomePage({ session, patientMode = false }) {
   const navigate = useNavigate();
-  const [demoAccounts, setDemoAccounts] = useState([]);
   const [form, setForm] = useState({
     symptoms: "",
     location: "Delhi",
     urgency: "normal",
   });
-
-  useEffect(() => {
-    if (!patientMode) {
-      getDemoAccounts().then(setDemoAccounts).catch(() => setDemoAccounts([]));
-    }
-  }, [patientMode]);
 
   function handleChange(event) {
     const { name, value } = event.target;
@@ -81,9 +73,6 @@ export default function HomePage({ session, patientMode = false }) {
   }
 
   if (!patientMode) {
-    const patientDemo = demoAccounts.find((item) => item.role === "patient");
-    const adminDemos = demoAccounts.filter((item) => item.role === "hospital_admin");
-
     return (
       <div className="section-shell pb-16 pt-10 sm:pb-20 sm:pt-14">
         <section className="grid items-center gap-10 lg:grid-cols-[1.1fr_0.9fr]">
@@ -100,12 +89,10 @@ export default function HomePage({ session, patientMode = false }) {
               <button type="button" className="secondary-button" onClick={() => navigate("/login/admin")}>
                 Hospital Admin Login
               </button>
+              <button type="button" className="secondary-button" onClick={() => navigate("/register/admin")}>
+                Create Admin Account
+              </button>
             </div>
-            {patientDemo ? (
-              <div className="mt-6 rounded-[24px] border border-blue-200 bg-blue-50 p-4 text-sm text-blue-700">
-                Demo patient: {patientDemo.email} / {patientDemo.password}
-              </div>
-            ) : null}
           </div>
 
           <div className="glass-panel p-6">
@@ -126,6 +113,7 @@ export default function HomePage({ session, patientMode = false }) {
                 title="Hospital Admin"
                 tone="bg-amber-50"
                 items={[
+                  "Create hospital admin account",
                   "Secure admin login",
                   "Update doctors, beds, ICU, and emergency state",
                   "Manage SOS and patient records",

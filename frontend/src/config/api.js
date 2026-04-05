@@ -1,8 +1,13 @@
-const DEFAULT_API_URL = "https://healthcare-coordination-system-in.onrender.com";
-const rawApiUrl = import.meta.env.VITE_API_URL || DEFAULT_API_URL;
+const rawBaseUrl = String(import.meta.env.VITE_API_URL || "").trim();
 
-export const BASE_URL = rawApiUrl.replace(/\/+$/, "");
+if (!rawBaseUrl) {
+  throw new Error("Missing VITE_API_URL. Set it to your Django backend base URL.");
+}
+
+export const BASE_URL = rawBaseUrl.replace(/\/api\/?$/, "").replace(/\/+$/, "");
 export const API_BASE_URL = `${BASE_URL}/api`;
-export const buildApiUrl = (path = "") => `${API_BASE_URL}/${String(path).replace(/^\/+/, "")}`;
 
-console.log("API BASE:", import.meta.env.VITE_API_URL || DEFAULT_API_URL);
+export function buildApiUrl(path = "") {
+  const normalizedPath = String(path).replace(/^\/+/, "");
+  return normalizedPath ? `${API_BASE_URL}/${normalizedPath}` : API_BASE_URL;
+}
