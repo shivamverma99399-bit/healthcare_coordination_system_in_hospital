@@ -1,80 +1,77 @@
 import os
-import secrets
 import sys
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
+
 from dotenv import load_dotenv
 
-# ✅ ONLY ONE ENV LOADER (fix)
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env", override=True)
 
-print(">>> DATABASE_URL =", repr(os.getenv("DATABASE_URL")))
 
 RUNNING_TESTS = len(sys.argv) > 1 and sys.argv[1] == "test"
 RUNNING_DEVELOPMENT_SERVER = len(sys.argv) > 1 and sys.argv[1] == "runserver"
 
 
-def env_bool(name, default=False):
-    value = os.getenv(name)
+def env_value(*names, default=None):
+    for name in names:
+        value = os.getenv(name)
+        if value is not None and str(value).strip() != "":
+            return value
+    return default
+
+
+def env_bool(*names, default=False):
+    value = env_value(*names)
     if value is None:
         return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def env_int(name, default=0):
-    value = os.getenv(name)
+def env_int(*names, default=0):
+    value = env_value(*names)
     if value is None:
         return default
     try:
-        return int(value.strip())
-    except:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
         return default
 
 
-def env_list(name, default=""):
-    value = os.getenv(name, default)
-    return [item.strip() for item in value.split(",") if item.strip()]
+def env_list(*names, default=""):
+    value = env_value(*names, default=default)
+    return [item.strip() for item in str(value).split(",") if item.strip()]
 
 
-# ========================
-# 🔐 CORE SETTINGS
-# ========================
+DEBUG = env_bool("DEBUG", "DJANGO_DEBUG", default=False)
 
-DEBUG = env_bool("DJANGO_DEBUG", RUNNING_DEVELOPMENT_SERVER or RUNNING_TESTS)
 
-SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "").strip()
+SECRET_KEY = str(env_value("DJANGO_SECRET_KEY", "SECRET_KEY", default="")).strip()
 if not SECRET_KEY:
-    if DEBUG:
-        SECRET_KEY = secrets.token_urlsafe(50)
-    else:
-        raise RuntimeError("DJANGO_SECRET_KEY must be configured.")
+    raise RuntimeError("DJANGO_SECRET_KEY must be set")
 
 
-ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", "127.0.0.1,localhost")
+ALLOWED_HOSTS = env_list("ALLOWED_HOSTS", "DJANGO_ALLOWED_HOSTS", default="*")
+
 
 CSRF_TRUSTED_ORIGINS = env_list(
+    "CSRF_TRUSTED_ORIGINS",
     "DJANGO_CSRF_TRUSTED_ORIGINS",
-    "http://localhost:5173,http://127.0.0.1:5173",
+    default="https://*.onrender.com",
 )
+
 
 CORS_ALLOWED_ORIGINS = env_list(
+    "CORS_ALLOWED_ORIGINS",
     "DJANGO_CORS_ALLOWED_ORIGINS",
-    "http://localhost:5173,http://127.0.0.1:5173",
+    default="",
 )
 
 
-# ========================
-# 🤖 GEMINI
-# ========================
+GEMINI_API_KEY = str(env_value("GEMINI_API_KEY", default="")).strip()
+GEMINI_ENABLED = env_bool("GEMINI_ENABLED", default=bool(GEMINI_API_KEY))
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_ENABLED = env_bool("GEMINI_ENABLED", bool(GEMINI_API_KEY))
-
-
-# ========================
-# 📦 APPS
-# ========================
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -123,24 +120,20 @@ TEMPLATES = [
 WSGI_APPLICATION = "healthcare_system.wsgi.application"
 
 
-# ========================
-# 🧠 DATABASE (FIXED)
-# ========================
-
 def build_database_settings():
     database_url = os.getenv("DATABASE_URL")
 
     if not database_url:
-        raise RuntimeError("❌ DATABASE_URL missing in .env")
+        raise RuntimeError("DATABASE_URL missing in environment")
 
     parsed = urlparse(database_url)
 
     if parsed.scheme not in ["postgres", "postgresql"]:
-        raise RuntimeError("❌ Only PostgreSQL DATABASE_URL allowed")
+        raise RuntimeError("Only PostgreSQL DATABASE_URL is allowed")
 
     name = parsed.path.lstrip("/")
     if not all([name, parsed.hostname, parsed.username, parsed.password]):
-        raise RuntimeError("❌ Invalid DATABASE_URL format")
+        raise RuntimeError("Invalid DATABASE_URL format")
 
     query = parse_qs(parsed.query)
     sslmode = query.get("sslmode", ["require"])[0]
@@ -164,19 +157,11 @@ DATABASES = {
 }
 
 
-# ========================
-# 🔐 AUTH
-# ========================
-
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
 ]
 
-
-# ========================
-# 🌍 GLOBAL
-# ========================
 
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"
@@ -184,25 +169,14 @@ USE_I18N = True
 USE_TZ = True
 
 
-# ========================
-# 📁 STATIC
-# ========================
-
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
 
-# ========================
-# 🔒 SECURITY
-# ========================
-
 SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_SECURE = not DEBUG
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
-
-# ========================
-# ⚙️ DRF
-# ========================
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
